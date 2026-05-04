@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AI Usage Monitor</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to dashboard</a>
+    <header class="app-header">
+      <div class="brand">
+        <p class="eyebrow">Local AI ledger</p>
+        <h1>AI Usage Monitor</h1>
+      </div>
+      <nav class="page-tabs" aria-label="Dashboard pages">
+        <button class="tab-button active" type="button" data-page="usage">Usage</button>
+        <button class="tab-button" type="button" data-page="project">Project</button>
+        <button class="tab-button" type="button" data-page="sources">Sources</button>
+      </nav>
+      <div class="header-actions">
+        <div id="scan-status" class="scan-status" role="status" aria-live="polite">Loading records</div>
+        <button id="refresh-button" class="button" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main id="main" class="dashboard">
+      <section id="page-usage" class="page active" aria-labelledby="usage-title">
+        <div class="page-heading">
+          <div>
+            <h2 id="usage-title">Usage Over Time</h2>
+            <p id="generated-at">Waiting for first scan</p>
+          </div>
+        </div>
+        <div id="overview-grid" class="metric-grid" aria-live="polite"></div>
+        <div class="layout-main">
+          <article class="panel">
+            <div class="panel-heading">
+              <h3>Total + Projects</h3>
+              <span class="tag neutral">Choose lines in legend</span>
+            </div>
+            <div id="usage-chart" class="chart" role="img" aria-label="Token usage by project over time"></div>
+          </article>
+          <aside class="panel">
+            <div class="panel-heading">
+              <h3>Legend</h3>
+            </div>
+            <div id="usage-legend" class="legend-list"></div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="page-project" class="page" aria-labelledby="project-title">
+        <div class="page-heading">
+          <div>
+            <h2 id="project-title">Project Detail</h2>
+            <p>Pick one workspace and inspect its usage, runs, and tools.</p>
+          </div>
+          <label class="select-label">
+            <span>Codex workspace</span>
+            <select id="project-select"></select>
+          </label>
+        </div>
+        <div id="project-metrics" class="metric-grid compact"></div>
+        <div class="layout-main">
+          <article class="panel">
+            <div class="panel-heading">
+              <h3 id="project-chart-title">Project Usage</h3>
+            </div>
+            <div id="project-chart" class="chart short" role="img" aria-label="Selected project usage over time"></div>
+          </article>
+          <aside class="panel">
+            <div class="panel-heading">
+              <h3>Project Runs</h3>
+            </div>
+            <div id="project-top-runs" class="rank-list"></div>
+          </aside>
+        </div>
+        <article class="panel">
+          <div class="panel-heading">
+            <h3>Recent Threads</h3>
+          </div>
+          <div id="project-threads" class="table-wrap"></div>
+        </article>
+      </section>
+
+      <section id="page-sources" class="page" aria-labelledby="sources-title">
+        <div class="page-heading">
+          <div>
+            <h2 id="sources-title">Sources</h2>
+            <p>Everything here is read-only local metadata. Secrets stay redacted.</p>
+          </div>
+        </div>
+        <div class="source-grid">
+          <article class="panel">
+            <div class="panel-heading">
+              <h3>Source Health</h3>
+            </div>
+            <div id="source-health" class="source-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading">
+              <h3>App Records</h3>
+              <span class="tag green">Local scan</span>
+            </div>
+            <div id="app-records-summary" class="mini-metrics"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading">
+              <h3>Hermes</h3>
+              <span id="hermes-status" class="tag neutral">WSL</span>
+            </div>
+            <div id="hermes-summary" class="source-list"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading">
+              <h3>Stored Records</h3>
+              <span class="tag blue">Read only</span>
+            </div>
+            <div id="stored-records" class="record-grid"></div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <template id="empty-template">
+      <p class="empty">No records found.</p>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

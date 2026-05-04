@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.log
+*.jsonl
+*.sqlite
+*.sqlite3
+auth.json
+.codex/
+tmp/

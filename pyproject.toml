@@ -1,0 +1,13 @@
+[project]
+name = "ai-usage-monitor"
+version = "0.0.0"
+description = "Read-only local dashboard for Codex usage and local AI application records."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
