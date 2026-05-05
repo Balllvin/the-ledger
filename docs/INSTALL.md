@@ -35,6 +35,14 @@ python server.py --host 127.0.0.1 --port 5177
 
 ## macOS
 
+Double-click from Finder:
+
+```text
+bin/ai-usage-monitor.command
+```
+
+Or run from Terminal:
+
 ```bash
 git clone https://github.com/<owner>/ai-usage-monitor.git
 cd ai-usage-monitor
