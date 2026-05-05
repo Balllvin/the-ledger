@@ -450,7 +450,7 @@ function renderSwearMeterChart(selector, meter) {
     .map(
       (row, index) => `
         <g class="chart-point-group" data-day="${escapeHtml(row.day)}">
-          <circle class="chart-hit-point" cx="${x(index).toFixed(1)}" cy="${yRate(selectedRates[index]).toFixed(1)}" r="11" tabindex="0" aria-label="${escapeHtml(`${row.day}: ${formatPercent(selectedRates[index])} selected index, ${formatNumber(selectedCounts[index])} counted messages`)}"></circle>
+          <circle class="chart-hit-point" cx="${x(index).toFixed(1)}" cy="${yRate(selectedRates[index]).toFixed(1)}" r="11" tabindex="0" aria-label="${escapeHtml(`${row.day}: index ${formatPercent(selectedRates[index])} (${formatNumber(selectedCounts[index])})`)}"></circle>
           <circle class="swear-chart-point" cx="${x(index).toFixed(1)}" cy="${yRate(selectedRates[index]).toFixed(1)}" r="3" />
         </g>
       `,
@@ -486,15 +486,16 @@ function renderSwearMeterChart(selector, meter) {
   };
   const showTooltip = (event, item) => {
     const parts = [];
-    parts.push(`<span><i style="background:var(--border-strong)"></i>Scanned messages: ${escapeHtml(formatNumber(item.row.messages))}</span>`);
-    parts.push(`<span><i style="background:var(--red-ink)"></i>Selected index: ${escapeHtml(formatPercent(item.rate))} (${escapeHtml(formatNumber(item.selectedCount))})</span>`);
+    if (visibleCategories.length !== 1) {
+      parts.push(`<span><i style="background:var(--red-ink)"></i>Index: ${escapeHtml(formatPercent(item.rate))} (${escapeHtml(formatNumber(item.selectedCount))})</span>`);
+    }
     visibleCategories.forEach((category) => {
       const values = (item.row.categories || {})[category.id] || {};
       const messages = Number(values.messages || 0);
-      if (messages > 0) {
+      if (messages > 0 || visibleCategories.length === 1) {
         const color = swearCategoryColor(category, categories);
         const percent = Number(item.row.messages || 0) ? (messages / Number(item.row.messages || 0)) * 100 : 0;
-        parts.push(`<span><i style="background:${escapeHtml(color)}"></i>${escapeHtml(category.label)}: ${escapeHtml(formatNumber(messages))} (${escapeHtml(formatPercent(percent))})</span>`);
+        parts.push(`<span><i style="background:${escapeHtml(color)}"></i>${escapeHtml(category.label)}: ${escapeHtml(formatPercent(percent))} (${escapeHtml(formatNumber(messages))})</span>`);
       }
     });
     if (!parts.length) {
