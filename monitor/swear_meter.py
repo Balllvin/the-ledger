@@ -724,6 +724,8 @@ def analyze_user_message(message: str, timestamp: str | None = None) -> dict[str
         result["categoryMessages"][category] += 1
         if day:
             result["timeline"][(day, f"categoryMessages:{category}")] += 1
+    if day and categories_in_message:
+        result["timeline"][(day, f"categorySet:{'|'.join(sorted(categories_in_message))}")] += 1
     return result
 
 
@@ -797,6 +799,14 @@ def finalize_swear_meter(summary: dict[str, Any]) -> dict[str, Any]:
                     if (summary.get("timeline") or {}).get((day, f"categoryMessages:{category}"))
                     or (summary.get("timeline") or {}).get((day, f"category:{category}"))
                 },
+                "categorySets": [
+                    {
+                        "categories": str(key[1]).removeprefix("categorySet:").split("|"),
+                        "messages": int(count),
+                    }
+                    for key, count in sorted((summary.get("timeline") or {}).items())
+                    if key[0] == day and str(key[1]).startswith("categorySet:")
+                ],
             }
             for day in days
         ],

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import monitor.codex as codex
 from monitor.codex import collect_sessions, scan_session_file
-from monitor.swear_meter import analyze_user_message, match_message, should_skip_message
+from monitor.swear_meter import analyze_user_message, finalize_swear_meter, match_message, should_skip_message
 
 
 class SwearMeterTests(unittest.TestCase):
@@ -42,6 +42,14 @@ class SwearMeterTests(unittest.TestCase):
         self.assertEqual(result["timeline"][("2025-01-06", "swearMessages")], 1)
         self.assertEqual(result["timeline"][("2025-01-06", "categoryMessages:wtf_moment")], 1)
         self.assertGreaterEqual(result["categories"]["wtf_moment"], 1)
+
+    def test_category_sets_count_overlapping_categories_once(self) -> None:
+        result = analyze_user_message("stop hallucinating and this is bullshit", "2025-01-06T09:00:00Z")
+        finalized = finalize_swear_meter(result)
+        sets = finalized["timeline"][0]["categorySets"]
+
+        self.assertEqual(sum(row["messages"] for row in sets), 1)
+        self.assertTrue(any({"ai_coding_failure", "anger_callout"}.issubset(set(row["categories"])) for row in sets))
 
     def test_scan_session_file_adds_privacy_safe_swear_meter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

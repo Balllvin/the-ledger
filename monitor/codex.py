@@ -424,6 +424,13 @@ def _swear_meter_from_finalized(summary: dict[str, Any]) -> dict[str, Any]:
                 continue
             meter["timeline"][(str(day), f"categoryMessages:{category}")] += int(values.get("messages") or 0)
             meter["timeline"][(str(day), f"category:{category}")] += int(values.get("occurrences") or 0)
+        for category_set in row.get("categorySets") or []:
+            categories = category_set.get("categories") if isinstance(category_set, dict) else None
+            if not isinstance(categories, list):
+                continue
+            key = "|".join(sorted(str(category) for category in categories if category))
+            if key:
+                meter["timeline"][(str(day), f"categorySet:{key}")] += int(category_set.get("messages") or 0)
     return meter
 
 
