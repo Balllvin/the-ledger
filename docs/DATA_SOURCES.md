@@ -1,6 +1,6 @@
 # Data Sources
 
-The monitor is intentionally read-only. It does not mutate Codex, SQLite files, JSONL sessions, logs, exports, or app records.
+The Ledger is intentionally read-only. It does not mutate Codex, SQLite files, JSONL sessions, logs, exports, or app records.
 
 ## Discovery
 
@@ -52,7 +52,7 @@ Auth handling:
 
 Default candidate: a discovered app root with `data/lattice.db`
 
-Override: `AI_USAGE_MONITOR_LATTICE_ROOT`
+Override: `THE_LEDGER_LATTICE_ROOT`
 
 Collected records when present:
 
@@ -70,7 +70,7 @@ Collected records when present:
 
 Collected from local Hermes roots when present:
 
-- `~/.hermes`, `~/.local/state/hermes`, roots listed in `AI_USAGE_MONITOR_HERMES_ROOTS`, and bounded app folders with Hermes state markers
+- `~/.hermes`, `~/.local/state/hermes`, roots listed in `THE_LEDGER_HERMES_ROOTS`, and bounded app folders with Hermes state markers
 - `auth.json` and `auth.lock` presence only
 - user Codex `~/.codex/auth.json` presence only, for Hermes/Codex auth coverage
 - `state.db`

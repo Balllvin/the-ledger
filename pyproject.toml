@@ -1,7 +1,7 @@
 [project]
-name = "ai-usage-monitor"
+name = "the-ledger"
 version = "0.0.0"
-description = "Read-only local dashboard for Codex usage and local AI application records."
+description = "Read-only local ledger for Codex usage and local AI application records."
 requires-python = ">=3.11"
 dependencies = []
 

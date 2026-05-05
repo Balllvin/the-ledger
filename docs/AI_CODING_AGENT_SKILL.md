@@ -1,6 +1,6 @@
-# AI Coding Agent Skill: Local AI Usage Monitor
+# AI Coding Agent Skill: The Ledger
 
-Use this skill when a user wants a local dashboard for Codex usage, Codex auth presence, Codex-linked app records, and related local AI metadata.
+Use this skill when a user wants The Ledger, a local dashboard for Codex usage, Codex auth presence, Codex-linked app records, and related local AI metadata.
 
 ## Goal
 
@@ -39,9 +39,9 @@ Use `python3` instead of `python` on macOS/Linux when needed.
 
 1. Inspect environment variables:
    - `CODEX_HOME`
-   - `AI_USAGE_MONITOR_SCAN_ROOTS`
-   - `AI_USAGE_MONITOR_EXTRA_APP_ROOTS`
-   - `AI_USAGE_MONITOR_LATTICE_ROOT`
+   - `THE_LEDGER_SCAN_ROOTS`
+   - `THE_LEDGER_EXTRA_APP_ROOTS`
+   - `THE_LEDGER_LATTICE_ROOT`
 2. Check `~/.codex`.
 3. Search bounded roots for `.codex`, `state_5.sqlite`, `logs_2.sqlite`, and `auth.json`.
 4. Search bounded roots for app records:

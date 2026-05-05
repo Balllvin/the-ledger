@@ -53,7 +53,7 @@ Path examples in documentation are allowed only when they are generic placeholde
 ```bash
 git add .
 git status --short
-git commit -m "Create local AI usage monitor"
+git commit -m "Create The Ledger"
 ```
 
 ## Create GitHub Repository
@@ -63,7 +63,7 @@ Creating the remote repository changes a GitHub account and should be confirmed 
 After confirmation:
 
 ```bash
-gh repo create ai-usage-monitor --public --source . --remote origin --push
+gh repo create the-ledger --public --source . --remote origin --push
 ```
 
 Use `--private` instead of `--public` if the user asks for a private repo.

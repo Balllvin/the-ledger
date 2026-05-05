@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repository is a local-first AI usage monitor. Your job is to make it run on the current user's laptop without collecting, committing, uploading, or exposing their private usage records.
+This repository is The Ledger, a local-first AI usage dashboard. Your job is to make it run on the current user's laptop without collecting, committing, uploading, or exposing their private usage records.
 
 ## Primary Goal
 
@@ -31,7 +31,7 @@ Read these files before changing behavior:
 1. Start the server locally and verify `/healthz`.
 2. Open the dashboard at `http://127.0.0.1:5177`.
 3. If no Codex records appear, follow [docs/DISCOVERY.md](docs/DISCOVERY.md) to find the local Codex root.
-4. Set `CODEX_HOME` or `AI_USAGE_MONITOR_SCAN_ROOTS` only when discovery needs help.
+4. Set `CODEX_HOME` or `THE_LEDGER_SCAN_ROOTS` only when discovery needs help.
 5. Keep UI changes simple: three pages, clear header switching, one primary chart, compact source health.
 6. Add or update tests for parser, discovery, sanitizer, or app-specific collector changes.
 
