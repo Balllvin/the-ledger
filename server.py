@@ -33,6 +33,12 @@ class Handler(BaseHTTPRequestHandler):
             include_hermes = params.get("hermes", ["1"])[0] != "0"
             self._json(get_snapshot(refresh=refresh, include_hermes=include_hermes))
             return
+        if parsed.path == "/api/snapshot/events":
+            params = parse_qs(parsed.query)
+            refresh = params.get("refresh", ["0"])[0] == "1"
+            include_hermes = params.get("hermes", ["1"])[0] != "0"
+            self._snapshot_events(refresh=refresh, include_hermes=include_hermes)
+            return
         if parsed.path in {"/", "/index.html"}:
             self._file(STATIC / "index.html")
             return
@@ -67,6 +73,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _event(self, event: str, payload: object) -> None:
+        self.wfile.write(encode_sse(event, payload))
+        self.wfile.flush()
+
+    def _snapshot_events(self, *, refresh: bool, include_hermes: bool) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        try:
+            self._event("status", {"message": "Starting scan"})
+            self._event("status", {"message": "Reading local usage records"})
+            payload = get_snapshot(refresh=refresh, include_hermes=include_hermes)
+            self._event("complete", payload)
+        except Exception as exc:  # pragma: no cover - defensive endpoint boundary
+            self._event("error", {"message": str(exc)})
+
 
 def get_snapshot(*, refresh: bool, include_hermes: bool) -> dict[str, object]:
     now = time.monotonic()
@@ -77,6 +101,11 @@ def get_snapshot(*, refresh: bool, include_hermes: bool) -> dict[str, object]:
         _CACHE["timestamp"] = now
         _CACHE["payload"] = payload
         return payload
+
+
+def encode_sse(event: str, payload: object) -> bytes:
+    body = json.dumps(payload, ensure_ascii=False)
+    return f"event: {event}\ndata: {body}\n\n".encode("utf-8")
 
 
 def main() -> None:

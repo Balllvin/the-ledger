@@ -7,7 +7,6 @@ The monitor should discover local AI usage records without requiring the user to
 1. `CODEX_HOME` when set.
 2. The current user's `~/.codex`.
 3. `.codex` directories under bounded scan roots:
-   - user home
    - Desktop
    - Documents
    - Downloads
@@ -30,6 +29,31 @@ The app treats auth files as presence-only metadata. It never displays auth valu
 - `archived_sessions/**/*.jsonl`: archived event streams.
 - `session_index.jsonl`: count only.
 - `generated_images`, `plugins`, `skills`, `automations`, `cache`, `sqlite`: filesystem metadata only.
+- `sqlite/codex-dev.db`: local Codex app automation/inbox metadata when present.
+- Desktop app support directories such as `~/Library/Application Support/Codex`, `%APPDATA%\Codex`, and `~/.config/Codex`: filesystem metadata only.
+
+## Hermes And Local Agent Search
+
+Hermes roots are discovered from:
+
+- `AI_USAGE_MONITOR_HERMES_ROOTS`
+- `~/.hermes`
+- `~/.local/state/hermes`
+- bounded scan roots that contain Hermes state markers such as `state.db`, `auth.json`, `gateway_state.json`, or a `sessions` directory
+
+Hermes auth files are presence-only metadata. The monitor reads Hermes SQLite databases read-only and summarizes tokens, sessions, messages, task status counts, and file metadata.
+
+## OpenCode Search
+
+OpenCode roots are discovered from:
+
+- `~/.opencode`
+- `~/.config/opencode`
+- `~/.local/share/opencode`
+- `~/Library/Application Support/ai.opencode.desktop`
+- project-local `.git/opencode` folders under bounded scan roots
+
+OpenCode auth files are presence-only metadata. The monitor reads `~/.local/share/opencode/opencode.db` read-only and summarizes sessions, workspaces, message token totals, models, providers, todos, CLI logs, desktop app logs, and desktop app metadata.
 
 ## Codex-Linked App Search
 
@@ -44,7 +68,7 @@ For each bounded scan root, identify likely app roots by looking for:
 - `data/lattice.db`
 - references to `.codex/auth.json`
 
-Only scan small text files and known metadata names. Skip:
+By default, discovery uses known metadata names and avoids opening arbitrary project text files. Set `AI_USAGE_MONITOR_DEEP_TEXT_SCAN=1` to also scan small text files for marker strings. Skip:
 
 - `.git`
 - `node_modules`
@@ -61,6 +85,8 @@ Do not read or report raw private document contents. Signal counts and paths are
 - `AI_USAGE_MONITOR_SCAN_ROOTS`: complete bounded roots, replacing the default scan roots.
 - `AI_USAGE_MONITOR_EXTRA_APP_ROOTS`: appended roots for extra app discovery.
 - `AI_USAGE_MONITOR_LATTICE_ROOT`: exact app root containing `data/lattice.db`.
+- `AI_USAGE_MONITOR_HERMES_ROOTS`: exact Hermes root paths to include.
+- `AI_USAGE_MONITOR_DEEP_TEXT_SCAN`: set to `1` to scan small text files for Codex marker strings.
 
 ## Agent Checklist
 

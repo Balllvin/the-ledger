@@ -10,19 +10,28 @@
     <a class="skip-link" href="#main">Skip to dashboard</a>
     <header class="app-header">
       <div class="brand">
-        <p class="eyebrow">Local AI ledger</p>
-        <h1>AI Usage Monitor</h1>
+        <p class="eyebrow">The ledger</p>
       </div>
       <nav class="page-tabs" aria-label="Dashboard pages">
         <button class="tab-button active" type="button" data-page="usage">Usage</button>
         <button class="tab-button" type="button" data-page="project">Project</button>
         <button class="tab-button" type="button" data-page="sources">Sources</button>
       </nav>
-      <div class="header-actions">
-        <div id="scan-status" class="scan-status" role="status" aria-live="polite">Loading records</div>
-        <button id="refresh-button" class="button" type="button">Refresh</button>
-      </div>
+      <button id="refresh-button" class="button" type="button">Refresh</button>
     </header>
+
+    <div class="utility-bar">
+      <fieldset class="source-toggle" aria-label="Usage sources">
+        <label>
+          <input type="checkbox" data-system-toggle="codex" checked />
+          <span>Codex</span>
+        </label>
+        <label>
+          <input type="checkbox" data-system-toggle="opencode" checked />
+          <span>OpenCode</span>
+        </label>
+      </fieldset>
+    </div>
 
     <main id="main" class="dashboard">
       <section id="page-usage" class="page active" aria-labelledby="usage-title">
@@ -33,11 +42,10 @@
           </div>
         </div>
         <div id="overview-grid" class="metric-grid" aria-live="polite"></div>
-        <div class="layout-main">
+        <div class="usage-stack">
           <article class="panel">
             <div class="panel-heading">
-              <h3>Total + Projects</h3>
-              <span class="tag neutral">Choose lines in legend</span>
+              <h3>Tokens used</h3>
             </div>
             <div id="usage-chart" class="chart" role="img" aria-label="Token usage by project over time"></div>
           </article>
@@ -54,10 +62,9 @@
         <div class="page-heading">
           <div>
             <h2 id="project-title">Project Detail</h2>
-            <p>Pick one workspace and inspect its usage, runs, and tools.</p>
           </div>
           <label class="select-label">
-            <span>Codex workspace</span>
+            <span>Workspace</span>
             <select id="project-select"></select>
           </label>
         </div>
@@ -88,14 +95,10 @@
         <div class="page-heading">
           <div>
             <h2 id="sources-title">Sources</h2>
-            <p>Everything here is read-only local metadata. Secrets stay redacted.</p>
           </div>
         </div>
         <div class="source-grid">
           <article class="panel">
-            <div class="panel-heading">
-              <h3>Source Health</h3>
-            </div>
             <div id="source-health" class="source-list"></div>
           </article>
           <article class="panel">

@@ -9,17 +9,35 @@ The app runs on the user's laptop, scans local records at runtime, and does not 
 - Codex roots such as `~/.codex` or `CODEX_HOME`
 - Codex SQLite state and log databases when present
 - Codex JSONL sessions and archived sessions
+- Codex desktop app metadata and local automation database when present
+- OpenCode CLI, app, SQLite session database, logs, prompt history, and auth presence when present
 - Codex-linked local app folders discovered from bounded user-home scans
 - Optional app databases such as `data/lattice.db` when present
-- Optional WSL Hermes metadata when available
+- Optional local and WSL Hermes metadata when available
 
 ## Run
+
+macOS users can double-click:
+
+```text
+bin/ai-usage-monitor.command
+```
+
+Or run it directly from a terminal on any platform:
 
 ```bash
 python server.py --host 127.0.0.1 --port 5177
 ```
 
 Open [http://127.0.0.1:5177](http://127.0.0.1:5177).
+
+## AI Agent Install Prompt
+
+Give this prompt to an AI coding agent on a new machine:
+
+```text
+Clone https://github.com/Balllvin/ai-usage-monitor, run the tests, start the local server, open the dashboard, and follow docs/DISCOVERY.md until Codex, OpenCode, and any local app records are discovered. Keep everything read-only and never upload usage data or secrets.
+```
 
 ## Test
 
@@ -35,6 +53,8 @@ All configuration is optional.
 - `AI_USAGE_MONITOR_SCAN_ROOTS`: path-list of roots to scan for `.codex` folders and Codex-linked app records.
 - `AI_USAGE_MONITOR_EXTRA_APP_ROOTS`: additional roots to include in discovery.
 - `AI_USAGE_MONITOR_LATTICE_ROOT`: explicit app root containing `data/lattice.db`.
+- `AI_USAGE_MONITOR_HERMES_ROOTS`: explicit Hermes runtime roots to include.
+- `AI_USAGE_MONITOR_DEEP_TEXT_SCAN`: set to `1` to also scan small project text files for marker strings.
 
 Path lists use the operating system separator: `;` on Windows and `:` on macOS/Linux.
 

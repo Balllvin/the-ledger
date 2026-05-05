@@ -21,6 +21,9 @@ from .utils import (
 
 
 TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "total_tokens")
+MAX_FULL_SESSION_BYTES = 2_000_000
+SESSION_TAIL_BYTES = 256_000
+MAX_PARSED_SESSION_FILES = 450
 
 
 def _empty_token_totals() -> dict[str, int]:
@@ -37,9 +40,9 @@ def add_token_totals(target: dict[str, int], usage: dict[str, Any] | None) -> No
             continue
 
 
-def scan_session_file(path: Path, *, archive: str, root: Path | None = None) -> dict[str, Any]:
+def _base_session(path: Path, *, archive: str, root: Path | None = None) -> dict[str, Any]:
     stat = path.stat()
-    session: dict[str, Any] = {
+    return {
         "id": None,
         "title": None,
         "archive": archive,
@@ -73,91 +76,125 @@ def scan_session_file(path: Path, *, archive: str, root: Path | None = None) -> 
         "recentFailures": [],
     }
 
+
+def scan_session_file(path: Path, *, archive: str, root: Path | None = None) -> dict[str, Any]:
+    session = _base_session(path, archive=archive, root=root)
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         for raw_line in handle:
             if not raw_line.strip():
                 continue
-            session["lineCount"] += 1
-            try:
-                obj = json.loads(raw_line)
-            except json.JSONDecodeError:
-                session["eventCounts"]["[invalid_json]"] += 1
-                continue
+            _apply_session_line(session, raw_line)
+    return _finalize_session(path, session)
 
-            timestamp = obj.get("timestamp")
-            if timestamp:
-                session["firstTimestamp"] = session["firstTimestamp"] or timestamp
-                session["lastTimestamp"] = timestamp
 
-            event_type = str(obj.get("type") or "[missing]")
-            session["eventCounts"][event_type] += 1
-            payload = obj.get("payload")
-            if not isinstance(payload, dict):
-                continue
-            payload_type = str(payload.get("type") or "[missing]")
-            session["payloadTypes"][payload_type] += 1
+def scan_session_file_fast(path: Path, *, archive: str, root: Path | None = None) -> dict[str, Any]:
+    session = _base_session(path, archive=archive, root=root)
+    session["partial"] = True
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(min(262_144, session["bytes"]))
+            if session["bytes"] > SESSION_TAIL_BYTES:
+                handle.seek(max(0, session["bytes"] - SESSION_TAIL_BYTES))
+                tail = handle.read()
+            else:
+                tail = b""
+    except OSError as exc:
+        session["error"] = safe_preview(exc)
+        return _finalize_session(path, session)
+    chunks = [head]
+    if tail:
+        chunks.append(tail.split(b"\n", 1)[-1])
+    for chunk in chunks:
+        for raw in chunk.decode("utf-8", errors="replace").splitlines():
+            if raw.strip():
+                _apply_session_line(session, raw)
+    return _finalize_session(path, session)
 
-            if event_type == "session_meta":
-                session["id"] = payload.get("id") or session["id"]
-                session["cwd"] = payload.get("cwd") or session["cwd"]
-                session["source"] = payload.get("source") or session["source"]
-                session["originator"] = payload.get("originator") or session["originator"]
-                session["modelProvider"] = payload.get("model_provider") or session["modelProvider"]
-                session["cliVersion"] = payload.get("cli_version") or session["cliVersion"]
-                session["agentRole"] = payload.get("agent_role") or session["agentRole"]
-                session["agentNickname"] = payload.get("agent_nickname") or session["agentNickname"]
 
-            if event_type == "turn_context":
-                model = payload.get("model")
-                if model:
-                    session["models"][str(model)] += 1
-                session["cwd"] = payload.get("cwd") or session["cwd"]
+def _apply_session_line(session: dict[str, Any], raw_line: str) -> None:
+    session["lineCount"] += 1
+    try:
+        obj = json.loads(raw_line)
+    except json.JSONDecodeError:
+        session["eventCounts"]["[invalid_json]"] += 1
+        return
 
-            if payload_type == "token_count":
-                info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
-                total_usage = info.get("total_token_usage") if isinstance(info, dict) else None
-                last_usage = info.get("last_token_usage") if isinstance(info, dict) else None
-                session["latestTokenUsage"] = _empty_token_totals()
-                add_token_totals(session["latestTokenUsage"], total_usage)
-                session["lastTurnUsage"] = _empty_token_totals()
-                add_token_totals(session["lastTurnUsage"], last_usage)
-                session["tokenEvents"] += 1
-                window = info.get("model_context_window") if isinstance(info, dict) else None
-                if window:
-                    session["contextWindows"][str(window)] += 1
+    timestamp = obj.get("timestamp")
+    if timestamp:
+        session["firstTimestamp"] = session["firstTimestamp"] or timestamp
+        session["lastTimestamp"] = timestamp
 
-            if payload_type == "exec_command_end":
-                session["commands"] += 1
-                exit_code = payload.get("exit_code")
-                if exit_code not in (0, "0", None):
-                    session["commandFailures"] += 1
-                    if len(session["recentFailures"]) < 10:
-                        session["recentFailures"].append(
-                            {
-                                "command": safe_preview(payload.get("command"), limit=120),
-                                "exitCode": exit_code,
-                                "cwd": safe_preview(payload.get("cwd"), limit=120),
-                            }
-                        )
+    event_type = str(obj.get("type") or "[missing]")
+    session["eventCounts"][event_type] += 1
+    payload = obj.get("payload")
+    if not isinstance(payload, dict):
+        return
+    payload_type = str(payload.get("type") or "[missing]")
+    session["payloadTypes"][payload_type] += 1
 
-            if payload_type in {"web_search_call", "web_search_end"}:
-                session["webSearches"] += 1
-            if payload_type in {"image_generation_call", "image_generation_end", "view_image_tool_call"}:
-                session["images"] += 1
-            if payload_type == "user_message":
-                session["userMessages"] += 1
-            if payload_type in {"agent_message", "message"} or payload.get("role") == "assistant":
-                session["assistantMessages"] += 1
+    if event_type == "session_meta":
+        session["id"] = payload.get("id") or session["id"]
+        session["cwd"] = payload.get("cwd") or session["cwd"]
+        session["source"] = payload.get("source") or session["source"]
+        session["originator"] = payload.get("originator") or session["originator"]
+        session["modelProvider"] = payload.get("model_provider") or session["modelProvider"]
+        session["cliVersion"] = payload.get("cli_version") or session["cliVersion"]
+        session["agentRole"] = payload.get("agent_role") or session["agentRole"]
+        session["agentNickname"] = payload.get("agent_nickname") or session["agentNickname"]
 
-            if event_type == "response_item":
-                name = payload.get("name") or payload.get("tool_name")
-                if name and payload_type in {"function_call", "custom_tool_call", "mcp_tool_call"}:
-                    session["tools"][str(name)] += 1
-                if payload.get("role") == "user":
-                    session["userMessages"] += 1
-                if payload.get("role") == "assistant":
-                    session["assistantMessages"] += 1
+    if event_type == "turn_context":
+        model = payload.get("model")
+        if model:
+            session["models"][str(model)] += 1
+        session["cwd"] = payload.get("cwd") or session["cwd"]
 
+    if payload_type == "token_count":
+        info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+        total_usage = info.get("total_token_usage") if isinstance(info, dict) else None
+        last_usage = info.get("last_token_usage") if isinstance(info, dict) else None
+        session["latestTokenUsage"] = _empty_token_totals()
+        add_token_totals(session["latestTokenUsage"], total_usage)
+        session["lastTurnUsage"] = _empty_token_totals()
+        add_token_totals(session["lastTurnUsage"], last_usage)
+        session["tokenEvents"] += 1
+        window = info.get("model_context_window") if isinstance(info, dict) else None
+        if window:
+            session["contextWindows"][str(window)] += 1
+
+    if payload_type == "exec_command_end":
+        session["commands"] += 1
+        exit_code = payload.get("exit_code")
+        if exit_code not in (0, "0", None):
+            session["commandFailures"] += 1
+            if len(session["recentFailures"]) < 10:
+                session["recentFailures"].append(
+                    {
+                        "command": safe_preview(payload.get("command"), limit=120),
+                        "exitCode": exit_code,
+                        "cwd": safe_preview(payload.get("cwd"), limit=120),
+                    }
+                )
+
+    if payload_type in {"web_search_call", "web_search_end"}:
+        session["webSearches"] += 1
+    if payload_type in {"image_generation_call", "image_generation_end", "view_image_tool_call"}:
+        session["images"] += 1
+    if payload_type == "user_message":
+        session["userMessages"] += 1
+    if payload_type in {"agent_message", "message"} or payload.get("role") == "assistant":
+        session["assistantMessages"] += 1
+
+    if event_type == "response_item":
+        name = payload.get("name") or payload.get("tool_name")
+        if name and payload_type in {"function_call", "custom_tool_call", "mcp_tool_call"}:
+            session["tools"][str(name)] += 1
+        if payload.get("role") == "user":
+            session["userMessages"] += 1
+        if payload.get("role") == "assistant":
+            session["assistantMessages"] += 1
+
+
+def _finalize_session(path: Path, session: dict[str, Any]) -> dict[str, Any]:
     for counter_key in ("eventCounts", "payloadTypes", "tools", "models", "contextWindows"):
         session[counter_key] = dict(session[counter_key].most_common(25))
     session["id"] = session["id"] or _id_from_rollout_name(path.name)
@@ -188,13 +225,24 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
     failed_commands = 0
     command_count = 0
     bytes_total = 0
+    parsed_files = 0
+    skipped_files = 0
 
     for archive, root in roots:
         if not root.exists():
             continue
-        for path in sorted(root.rglob("*.jsonl")):
+        paths = sorted(root.rglob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True)
+        for index, path in enumerate(paths):
             try:
-                session = scan_session_file(path, archive=archive, root=codex_root)
+                if index >= MAX_PARSED_SESSION_FILES:
+                    session = _finalize_session(path, {**_base_session(path, archive=archive, root=codex_root), "skipped": True})
+                    skipped_files += 1
+                elif path.stat().st_size > MAX_FULL_SESSION_BYTES:
+                    session = scan_session_file_fast(path, archive=archive, root=codex_root)
+                    parsed_files += 1
+                else:
+                    session = scan_session_file(path, archive=archive, root=codex_root)
+                    parsed_files += 1
             except OSError as exc:
                 all_sessions.append(
                     {
@@ -236,6 +284,8 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
         "models": dict(models.most_common(20)),
         "payloadTypes": dict(payload_types.most_common(30)),
         "eventTypes": dict(event_types.most_common(20)),
+        "parsedFiles": parsed_files,
+        "skippedFiles": skipped_files,
         "timeline": [{"day": day, **values} for day, values in sorted(by_day.items())],
         "recent": _compact_sessions(all_sessions[:80]),
         "topByTokens": _compact_sessions(sorted(all_sessions, key=lambda item: int((item.get("latestTokenUsage") or {}).get("total_tokens") or 0), reverse=True)[:25]),
@@ -260,6 +310,8 @@ def _compact_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "modified": item.get("modified"),
                 "bytes": item.get("bytes"),
                 "lineCount": item.get("lineCount"),
+                "partial": item.get("partial"),
+                "skipped": item.get("skipped"),
                 "tokens": item.get("latestTokenUsage"),
                 "commands": item.get("commands"),
                 "commandFailures": item.get("commandFailures"),
@@ -508,10 +560,12 @@ def collect_logs(codex_root: Path) -> dict[str, Any]:
     try:
         result["available"] = True
         result["total"] = table_count(con, "logs") or 0
-        result["levels"] = query_rows(con, "select level, count(*) count from logs group by level order by count desc")
+        recent_scope = "select * from logs order by id desc limit 20000"
+        result["sampledRows"] = min(20000, int(result["total"] or 0))
+        result["levels"] = query_rows(con, f"select level, count(*) count from ({recent_scope}) group by level order by count desc")
         result["targets"] = query_rows(
             con,
-            "select target, count(*) count, coalesce(sum(estimated_bytes),0) bytes from logs group by target order by count desc limit 30",
+            f"select target, count(*) count, coalesce(sum(estimated_bytes),0) bytes from ({recent_scope}) group by target order by count desc limit 30",
         )
         result["recentWarnings"] = [
             {
@@ -522,7 +576,7 @@ def collect_logs(codex_root: Path) -> dict[str, Any]:
             }
             for row in query_rows(
                 con,
-                "select ts, level, target, feedback_log_body body from logs where level in ('WARN','WARNING','ERROR') order by id desc limit 40",
+                f"select ts, level, target, feedback_log_body body from ({recent_scope}) where level in ('WARN','WARNING','ERROR') order by id desc limit 40",
             )
         ]
         result["byHour"] = [
@@ -532,7 +586,7 @@ def collect_logs(codex_root: Path) -> dict[str, Any]:
             }
             for row in query_rows(
                 con,
-                "select cast(ts / 3600 as integer) bucket, count(*) count from logs group by bucket order by bucket desc limit 48",
+                f"select cast(ts / 3600 as integer) bucket, count(*) count from ({recent_scope}) group by bucket order by bucket desc limit 48",
             )
         ]
     finally:
@@ -585,6 +639,107 @@ def collect_filesystem(codex_root: Path) -> dict[str, Any]:
     }
 
 
+def collect_app_database(codex_root: Path) -> dict[str, Any]:
+    db = codex_root / "sqlite" / "codex-dev.db"
+    result: dict[str, Any] = {"database": file_info(db), "available": False}
+    if not db.exists():
+        return result
+    try:
+        con = open_sqlite_readonly(db)
+    except sqlite3.Error as exc:
+        result["error"] = safe_preview(exc)
+        return result
+    try:
+        result["available"] = True
+        tables = query_rows(con, "select name from sqlite_master where type='table' order by name")
+        result["tables"] = {row["name"]: table_count(con, row["name"]) for row in tables}
+        if table_count(con, "automations") is not None:
+            result["automations"] = {
+                "total": table_count(con, "automations") or 0,
+                "byStatus": query_rows(con, "select coalesce(status,'[unknown]') status, count(*) count from automations group by status order by count desc"),
+                "recent": [
+                    {
+                        "id": row.get("id"),
+                        "name": row.get("name") or "[untitled]",
+                        "status": row.get("status"),
+                        "model": row.get("model"),
+                        "reasoningEffort": row.get("reasoning_effort"),
+                        "nextRun": timestamp_to_iso(row.get("next_run_at")),
+                        "lastRun": timestamp_to_iso(row.get("last_run_at")),
+                    }
+                    for row in query_rows(
+                        con,
+                        "select id,name,status,next_run_at,last_run_at,model,reasoning_effort from automations order by updated_at desc limit 30",
+                    )
+                ],
+            }
+        if table_count(con, "automation_runs") is not None:
+            result["automationRuns"] = {
+                "total": table_count(con, "automation_runs") or 0,
+                "byStatus": query_rows(
+                    con,
+                    "select coalesce(status,'[unknown]') status, count(*) count from automation_runs group by status order by count desc",
+                ),
+                "recent": [
+                    {
+                        "threadId": row.get("thread_id"),
+                        "automationId": row.get("automation_id"),
+                        "status": row.get("status"),
+                        "threadTitle": row.get("thread_title"),
+                        "sourceCwd": path_for_display(row.get("source_cwd") or ""),
+                        "created": timestamp_to_iso(row.get("created_at")),
+                        "updated": timestamp_to_iso(row.get("updated_at")),
+                    }
+                    for row in query_rows(
+                        con,
+                        "select thread_id,automation_id,status,thread_title,source_cwd,created_at,updated_at "
+                        "from automation_runs order by updated_at desc limit 30",
+                    )
+                ],
+            }
+        if table_count(con, "inbox_items") is not None:
+            result["inboxItems"] = {
+                "total": table_count(con, "inbox_items") or 0,
+                "unread": con.execute("select count(*) from inbox_items where read_at is null").fetchone()[0],
+            }
+    except sqlite3.Error as exc:
+        result["error"] = safe_preview(exc)
+    finally:
+        con.close()
+    return result
+
+
+def collect_desktop_app_support(home: Path | None = None) -> dict[str, Any]:
+    base = home or default_home()
+    roots = _desktop_app_support_roots(base)
+    root = next((path for path in roots if path.exists()), roots[0])
+    result: dict[str, Any] = {
+        "root": file_info(root),
+        "available": root.exists(),
+        "candidates": [path_for_display(path) for path in roots],
+    }
+    if not root.exists():
+        return result
+    result["preferences"] = file_info(root / "Preferences")
+    result["browserSidebarLocalServers"] = file_info(root / "browser-sidebar-local-servers.json")
+    result["sessionStorage"] = count_files(root / "Session Storage", patterns=("*",))
+    result["cache"] = count_files(root / "Cache", patterns=("*",))
+    result["gpuCache"] = count_files(root / "GPUCache", patterns=("*",))
+    result["blobStorage"] = count_files(root / "blob_storage", patterns=("*",))
+    result["crashpad"] = count_files(root / "Crashpad", patterns=("*",))
+    return result
+
+
+def _desktop_app_support_roots(home: Path) -> list[Path]:
+    candidates = [
+        home / "Library" / "Application Support" / "Codex",
+        home / "AppData" / "Roaming" / "Codex",
+        home / ".config" / "Codex",
+        home / ".local" / "share" / "Codex",
+    ]
+    return candidates
+
+
 def collect_codex(home: Path | None = None) -> dict[str, Any]:
     base = home or default_home()
     codex_root = base if (base / "state_5.sqlite").exists() or (base / "auth.json").exists() else base / ".codex"
@@ -598,5 +753,7 @@ def collect_codex(home: Path | None = None) -> dict[str, Any]:
     result["state"] = collect_state(codex_root)
     result["logs"] = collect_logs(codex_root)
     result["sessions"] = collect_sessions(codex_root)
+    result["appDatabase"] = collect_app_database(codex_root)
+    result["desktopApp"] = collect_desktop_app_support(default_home())
     result = sanitize(result)
     return result
