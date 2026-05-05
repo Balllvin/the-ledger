@@ -406,7 +406,7 @@ function renderSwearMeterChart(selector, meter) {
     return;
   }
   const width = 960;
-  const height = 210;
+  const height = 300;
   const pad = { left: 46, right: 18, top: 18, bottom: 32 };
   const innerWidth = width - pad.left - pad.right;
   const innerHeight = height - pad.top - pad.bottom;
@@ -608,8 +608,8 @@ function renderSwearMeter(data) {
     "#swear-meter-summary",
     `
       <div class="mini-metrics">
-        ${metric("Selected index", formatPercent(selectedTotals.rate), `${formatNumber(selectedTotals.selectedMessages)} of ${formatNumber(selectedTotals.messages)} user messages`)}
-        ${metric("Selected hits", formatCompact(selectedTotals.selectedOccurrences), `${formatCompact(meter.swearIndexOccurrences)} total occurrences`)}
+        ${metric("Index", formatPercent(selectedTotals.rate), `${formatNumber(selectedTotals.selectedMessages)} of ${formatNumber(selectedTotals.messages)} user messages`)}
+        ${metric("Hits", formatCompact(selectedTotals.selectedOccurrences), `${formatCompact(meter.swearIndexOccurrences)} total occurrences`)}
       </div>
       <div id="swear-meter-chart" class="chart swear-chart" role="img" aria-label="Swear index over time"></div>
       <div id="swear-meter-legend" class="legend-list swear-legend"></div>
