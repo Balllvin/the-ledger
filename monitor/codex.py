@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter, defaultdict
+from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from .sanitize import safe_preview, sanitize
+from .swear_meter import analyze_user_message, empty_swear_meter, finalize_swear_meter, merge_swear_meter
 from .utils import (
     count_files,
     default_home,
@@ -24,6 +27,13 @@ TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning
 MAX_FULL_SESSION_BYTES = 2_000_000
 SESSION_TAIL_BYTES = 256_000
 MAX_PARSED_SESSION_FILES = 450
+SWEAR_CANDIDATE_MARKERS = (
+    b"session_meta",
+    b"user_message",
+    b'"role":"user"',
+    b'"role": "user"',
+)
+_SWEAR_SCAN_CACHE: dict[tuple[str, str, str, int, int], dict[str, Any]] = {}
 
 
 def _empty_token_totals() -> dict[str, int]:
@@ -40,8 +50,8 @@ def add_token_totals(target: dict[str, int], usage: dict[str, Any] | None) -> No
             continue
 
 
-def _base_session(path: Path, *, archive: str, root: Path | None = None) -> dict[str, Any]:
-    stat = path.stat()
+def _base_session(path: Path, *, archive: str, root: Path | None = None, file_stat: Any | None = None) -> dict[str, Any]:
+    stat = file_stat or path.stat()
     return {
         "id": None,
         "title": None,
@@ -74,6 +84,8 @@ def _base_session(path: Path, *, archive: str, root: Path | None = None) -> dict
         "agentRole": None,
         "agentNickname": None,
         "recentFailures": [],
+        "swearMeter": empty_swear_meter(),
+        "_swearMessageIds": set(),
     }
 
 
@@ -108,7 +120,40 @@ def scan_session_file_fast(path: Path, *, archive: str, root: Path | None = None
         for raw in chunk.decode("utf-8", errors="replace").splitlines():
             if raw.strip():
                 _apply_session_line(session, raw)
+    full_swear_meter = scan_session_swear_meter(path, archive=archive, root=root)
+    session["swearMeter"] = _swear_meter_from_finalized(full_swear_meter["swearMeter"])
+    session["id"] = full_swear_meter.get("id") or session["id"]
+    session["cwd"] = full_swear_meter.get("cwd") or session["cwd"]
+    session["source"] = full_swear_meter.get("source") or session["source"]
     return _finalize_session(path, session)
+
+
+def scan_session_swear_meter(path: Path, *, archive: str, root: Path | None = None) -> dict[str, Any]:
+    stat = path.stat()
+    cache_key = (str(path), archive, str(root or ""), int(stat.st_size), int(stat.st_mtime_ns))
+    cached = _SWEAR_SCAN_CACHE.get(cache_key)
+    if cached is not None:
+        return deepcopy(cached)
+    session = _base_session(path, archive=archive, root=root, file_stat=stat)
+    try:
+        with path.open("rb") as handle:
+            for raw_line in handle:
+                _apply_swear_candidate_line(session, raw_line)
+    except OSError as exc:
+        session["error"] = safe_preview(exc)
+        return _finalize_session(path, session)
+    session["swearOnly"] = True
+    finalized = _finalize_session(path, session)
+    _SWEAR_SCAN_CACHE[cache_key] = deepcopy(finalized)
+    return finalized
+
+
+def _apply_swear_candidate_line(session: dict[str, Any], raw_line: bytes) -> None:
+    if not raw_line.strip():
+        return
+    if not any(marker in raw_line for marker in SWEAR_CANDIDATE_MARKERS):
+        return
+    _apply_session_line(session, raw_line.decode("utf-8", errors="replace"))
 
 
 def _apply_session_line(session: dict[str, Any], raw_line: str) -> None:
@@ -181,6 +226,7 @@ def _apply_session_line(session: dict[str, Any], raw_line: str) -> None:
         session["images"] += 1
     if payload_type == "user_message":
         session["userMessages"] += 1
+        _apply_user_message_for_swear_meter(session, payload.get("message"), timestamp)
     if payload_type in {"agent_message", "message"} or payload.get("role") == "assistant":
         session["assistantMessages"] += 1
 
@@ -190,13 +236,42 @@ def _apply_session_line(session: dict[str, Any], raw_line: str) -> None:
             session["tools"][str(name)] += 1
         if payload.get("role") == "user":
             session["userMessages"] += 1
+            _apply_user_message_for_swear_meter(session, _content_to_text(payload.get("content")), timestamp)
         if payload.get("role") == "assistant":
             session["assistantMessages"] += 1
+
+
+def _apply_user_message_for_swear_meter(session: dict[str, Any], message: Any, timestamp: Any) -> None:
+    if not isinstance(message, str):
+        return
+    clean = message.strip()
+    if not clean:
+        return
+    message_id = sha256(f"{timestamp or ''}\0{clean}".encode("utf-8", errors="replace")).hexdigest()
+    seen = session.setdefault("_swearMessageIds", set())
+    if message_id in seen:
+        return
+    seen.add(message_id)
+    merge_swear_meter(session["swearMeter"], analyze_user_message(clean, str(timestamp or "")))
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+    return "\n".join(parts)
 
 
 def _finalize_session(path: Path, session: dict[str, Any]) -> dict[str, Any]:
     for counter_key in ("eventCounts", "payloadTypes", "tools", "models", "contextWindows"):
         session[counter_key] = dict(session[counter_key].most_common(25))
+    session["swearMeter"] = finalize_swear_meter(session["swearMeter"])
+    session.pop("_swearMessageIds", None)
     session["id"] = session["id"] or _id_from_rollout_name(path.name)
     return session
 
@@ -227,17 +302,35 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
     bytes_total = 0
     parsed_files = 0
     skipped_files = 0
+    swear_meter = empty_swear_meter()
+    swear_by_thread: dict[str, dict[str, Any]] = {}
 
     for archive, root in roots:
         if not root.exists():
             continue
-        paths = sorted(root.rglob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True)
-        for index, path in enumerate(paths):
+        entries: list[tuple[float, int, Path]] = []
+        for path in root.rglob("*.jsonl"):
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                all_sessions.append(
+                    {
+                        "id": _id_from_rollout_name(path.name),
+                        "archive": archive,
+                        "path": safe_relpath(path, codex_root),
+                        "error": safe_preview(exc),
+                    }
+                )
+                continue
+            entries.append((stat.st_mtime, stat.st_size, path))
+        entries.sort(key=lambda item: item[0], reverse=True)
+        for index, (_, size, path) in enumerate(entries):
             try:
                 if index >= MAX_PARSED_SESSION_FILES:
-                    session = _finalize_session(path, {**_base_session(path, archive=archive, root=codex_root), "skipped": True})
+                    session = scan_session_swear_meter(path, archive=archive, root=codex_root)
+                    session["skipped"] = True
                     skipped_files += 1
-                elif path.stat().st_size > MAX_FULL_SESSION_BYTES:
+                elif size > MAX_FULL_SESSION_BYTES:
                     session = scan_session_file_fast(path, archive=archive, root=codex_root)
                     parsed_files += 1
                 else:
@@ -265,6 +358,12 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
                 payload_types[name] += int(count)
             for name, count in (session.get("eventCounts") or {}).items():
                 event_types[name] += int(count)
+            session_swear_meter = _swear_meter_from_finalized(session.get("swearMeter") or {})
+            merge_swear_meter(swear_meter, session_swear_meter)
+            session_id = session.get("id")
+            if session_id:
+                thread_meter = swear_by_thread.setdefault(str(session_id), empty_swear_meter())
+                merge_swear_meter(thread_meter, session_swear_meter)
             failed_commands += int(session.get("commandFailures") or 0)
             command_count += int(session.get("commands") or 0)
             day = str(session.get("firstTimestamp") or session.get("modified") or "")[:10]
@@ -286,10 +385,53 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
         "eventTypes": dict(event_types.most_common(20)),
         "parsedFiles": parsed_files,
         "skippedFiles": skipped_files,
+        "swearMeter": finalize_swear_meter(swear_meter),
+        "swearByThread": {thread_id: finalize_swear_meter(meter) for thread_id, meter in swear_by_thread.items()},
         "timeline": [{"day": day, **values} for day, values in sorted(by_day.items())],
         "recent": _compact_sessions(all_sessions[:80]),
         "topByTokens": _compact_sessions(sorted(all_sessions, key=lambda item: int((item.get("latestTokenUsage") or {}).get("total_tokens") or 0), reverse=True)[:25]),
     }
+
+
+def _swear_meter_from_finalized(summary: dict[str, Any]) -> dict[str, Any]:
+    meter = empty_swear_meter()
+    meter["directUserMessages"] = int(summary.get("directUserMessages") or 0)
+    meter["swearIndexMessages"] = int(summary.get("swearIndexMessages") or 0)
+    meter["swearIndexOccurrences"] = int(summary.get("swearIndexOccurrences") or 0)
+    meter["swearIndexScore"] = int(summary.get("swearIndexScore") or 0)
+    meter["groups"].update(summary.get("groups") or {})
+    for row in summary.get("categories") or []:
+        category = row.get("id")
+        if not category:
+            continue
+        meter["categories"][str(category)] += int(row.get("occurrences") or 0)
+        meter["categoryMessages"][str(category)] += int(row.get("messages") or 0)
+        meter["categoryScores"][str(category)] += int(row.get("score") or 0)
+    for row in summary.get("terms") or []:
+        term = row.get("term")
+        if not term:
+            continue
+        meter["terms"][str(term)] += int(row.get("messages") or 0)
+        meter["termOccurrences"][str(term)] += int(row.get("occurrences") or 0)
+    for row in summary.get("timeline") or []:
+        day = row.get("day")
+        if not day:
+            continue
+        meter["timeline"][(str(day), "messages")] += int(row.get("messages") or 0)
+        meter["timeline"][(str(day), "swearMessages")] += int(row.get("swearMessages") or 0)
+        for category, values in (row.get("categories") or {}).items():
+            if not isinstance(values, dict):
+                continue
+            meter["timeline"][(str(day), f"categoryMessages:{category}")] += int(values.get("messages") or 0)
+            meter["timeline"][(str(day), f"category:{category}")] += int(values.get("occurrences") or 0)
+        for category_set in row.get("categorySets") or []:
+            categories = category_set.get("categories") if isinstance(category_set, dict) else None
+            if not isinstance(categories, list):
+                continue
+            key = "|".join(sorted(str(category) for category in categories if category))
+            if key:
+                meter["timeline"][(str(day), f"categorySet:{key}")] += int(category_set.get("messages") or 0)
+    return meter
 
 
 def _compact_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -315,6 +457,7 @@ def _compact_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "tokens": item.get("latestTokenUsage"),
                 "commands": item.get("commands"),
                 "commandFailures": item.get("commandFailures"),
+                "swearMeter": item.get("swearMeter"),
                 "tools": item.get("tools"),
                 "models": item.get("models"),
             }
@@ -755,5 +898,5 @@ def collect_codex(home: Path | None = None) -> dict[str, Any]:
     result["sessions"] = collect_sessions(codex_root)
     result["appDatabase"] = collect_app_database(codex_root)
     result["desktopApp"] = collect_desktop_app_support(default_home())
-    result = sanitize(result)
+    result = sanitize(result, max_depth=10)
     return result

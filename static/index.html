@@ -16,6 +16,7 @@
         <button class="tab-button active" type="button" data-page="usage">Usage</button>
         <button class="tab-button" type="button" data-page="project">Project</button>
         <button class="tab-button" type="button" data-page="sources">Sources</button>
+        <button class="tab-button" type="button" data-page="about">About</button>
       </nav>
       <button id="refresh-button" class="button" type="button">Refresh</button>
     </header>
@@ -56,6 +57,12 @@
             <div id="usage-legend" class="legend-list"></div>
           </aside>
         </div>
+        <article class="panel">
+          <div class="panel-heading">
+            <h3>Swear Meter</h3>
+          </div>
+          <div id="swear-meter-summary" class="swear-meter"></div>
+        </article>
       </section>
 
       <section id="page-project" class="page" aria-labelledby="project-title">
@@ -123,6 +130,39 @@
             <div id="stored-records" class="record-grid"></div>
           </article>
         </div>
+      </section>
+
+      <section id="page-about" class="page" aria-labelledby="about-title">
+        <div class="page-heading">
+          <div>
+            <h2 id="about-title">About</h2>
+          </div>
+        </div>
+        <article class="panel about-panel">
+          <p>
+            The Ledger is a local dashboard for AI usage. The Swear Meter idea is credited to
+            <a href="https://github.com/petergpt/codex-swear-meter" target="_blank" rel="noreferrer">petergpt/codex-swear-meter</a>.
+          </p>
+          <p>It reads local records, counts matching user messages, and shows totals without showing raw messages.</p>
+          <div id="about-metrics" class="mini-metrics"></div>
+        </article>
+        <article class="panel about-panel">
+          <div class="panel-heading">
+            <h3>How the Swear Meter works</h3>
+          </div>
+          <ol class="plain-list">
+            <li>Scan user messages from local Codex records.</li>
+            <li>Match the word sets below.</li>
+            <li>Count one message once for the index, even when it hits more than one set.</li>
+            <li>Count every matched phrase for hits.</li>
+          </ol>
+        </article>
+        <article class="panel about-panel">
+          <div class="panel-heading">
+            <h3>Word sets</h3>
+          </div>
+          <div id="about-word-sets" class="word-set-list"></div>
+        </article>
       </section>
     </main>
 

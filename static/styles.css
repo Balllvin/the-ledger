@@ -25,6 +25,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--canvas);
@@ -611,6 +615,96 @@ select {
   gap: 10px;
 }
 
+.swear-meter {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.swear-meter .mini-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.swear-chart {
+  grid-column: 1;
+  min-width: 0;
+}
+
+.swear-legend {
+  grid-column: 1;
+}
+
+.swear-chart-line {
+  stroke: var(--red-ink);
+}
+
+.swear-chart-point {
+  fill: var(--red-ink);
+  stroke: var(--surface);
+  stroke-width: 1.5;
+}
+
+.about-panel {
+  margin-bottom: 16px;
+  padding: 16px;
+}
+
+.about-panel p {
+  max-width: 760px;
+  margin-bottom: 8px;
+  color: var(--ink-2);
+}
+
+.about-panel a {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.plain-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--ink-2);
+}
+
+.word-set-list {
+  display: grid;
+  gap: 10px;
+}
+
+.word-set {
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-soft);
+}
+
+.word-set-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.word-set-heading span {
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.word-list {
+  max-width: none;
+  margin: 0;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .record-card,
 .mini-metric {
   min-width: 0;
@@ -639,7 +733,7 @@ select {
 
 table {
   width: 100%;
-  min-width: 560px;
+  min-width: 680px;
   border-collapse: collapse;
 }
 
@@ -735,8 +829,14 @@ tr:last-child td {
   }
 
   .layout-main,
-  .source-grid {
+  .source-grid,
+  .swear-meter {
     grid-template-columns: 1fr;
+  }
+
+  .swear-chart,
+  .swear-legend {
+    grid-column: 1;
   }
 
   .metric-grid,
@@ -765,6 +865,7 @@ tr:last-child td {
   .metric-grid,
   .metric-grid.compact,
   .mini-metrics,
+  .swear-meter .mini-metrics,
   .record-grid {
     grid-template-columns: 1fr;
   }

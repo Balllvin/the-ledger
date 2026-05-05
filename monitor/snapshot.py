@@ -10,6 +10,7 @@ from .discovery import discover_local_sources, preferred_codex_root, preferred_l
 from .hermes import collect_hermes
 from .lattice import collect_lattice
 from .opencode import collect_opencode
+from .swear_meter import swear_meter_methods
 from .utils import default_home, utc_now_iso
 
 
@@ -35,6 +36,10 @@ def collect_snapshot(*, include_hermes: bool = True, home: Path | None = None) -
         "opencode": opencode,
         "lattice": lattice,
         "hermes": hermes,
+        "about": {
+            "sourceRepo": "https://github.com/petergpt/codex-swear-meter",
+            "swearMeterMethods": swear_meter_methods(),
+        },
     }
     snapshot["overview"] = _overview(snapshot)
     snapshot["meta"]["scanSeconds"] = round(time.perf_counter() - started, 3)
@@ -67,11 +72,15 @@ def _overview(snapshot: dict[str, Any]) -> dict[str, Any]:
 
     state_threads = (state.get("threads") or {})
     session_tokens = sessions.get("tokenTotals") or {}
+    swear_meter = sessions.get("swearMeter") or {}
     return {
         "codexThreads": int(state_threads.get("total") or 0),
         "codexStateTokens": int(state_threads.get("tokens") or 0),
         "codexJsonlTokens": int(session_tokens.get("total_tokens") or 0),
         "codexSessionFiles": int(sessions.get("files") or 0),
+        "codexDirectUserMessages": int(swear_meter.get("directUserMessages") or 0),
+        "codexSwearIndexMessages": int(swear_meter.get("swearIndexMessages") or 0),
+        "codexSwearIndexRate": float(swear_meter.get("swearIndexRate") or 0),
         "codexLogRows": int(logs.get("total") or 0),
         "codexCommandFailures": int(sessions.get("commandFailures") or 0),
         "codexAutomations": int(((app_database.get("automations") or {}).get("total")) or 0),

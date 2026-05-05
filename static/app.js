@@ -5,13 +5,58 @@ const pageButtons = [...document.querySelectorAll(".tab-button")];
 const pages = [...document.querySelectorAll(".page")];
 const projectSelect = document.querySelector("#project-select");
 const systemToggles = [...document.querySelectorAll("[data-system-toggle]")];
+const utilityBar = document.querySelector(".utility-bar");
 
 let snapshot = null;
 let selectedSeries = new Set(["total"]);
 let activeSystems = new Set(["codex", "opencode"]);
+let swearSeriesVisible = new Set();
+let swearLegendInitialized = false;
 let snapshotEvents = null;
 
 const SERIES_COLORS = ["#151515", "#1f6c9f", "#346538", "#956400", "#9f2f2d", "#5f4b8b", "#7a5b2e", "#3f6f72"];
+const SWEAR_CATEGORY_COLORS = ["#9f2f2d", "#1f6c9f", "#346538", "#956400", "#5f4b8b", "#3f6f72", "#7a5b2e", "#2f3f58", "#8b3f62"];
+
+function swearCategoryColor(category, categories) {
+  const index = Math.max(0, categories.findIndex((item) => item.id === category.id));
+  return SWEAR_CATEGORY_COLORS[index % SWEAR_CATEGORY_COLORS.length];
+}
+
+function selectedSwearCategories(categories) {
+  return categories.filter((category) => swearSeriesVisible.has(`category:${category.id}`));
+}
+
+function selectedSwearMessages(row, selectedCategories) {
+  if (!selectedCategories.length) return Number(row.swearMessages || 0);
+  const selectedIds = new Set(selectedCategories.map((category) => category.id));
+  if (!(row.categorySets || []).length) {
+    const summed = selectedCategories.reduce((total, category) => total + Number(((row.categories || {})[category.id] || {}).messages || 0), 0);
+    return Math.min(Number(row.messages || 0), summed);
+  }
+  return (row.categorySets || []).reduce((total, item) => {
+    const categories = item.categories || [];
+    return categories.some((category) => selectedIds.has(category)) ? total + Number(item.messages || 0) : total;
+  }, 0);
+}
+
+function selectedSwearTotals(meter) {
+  const categories = meter.categories || [];
+  const selectedCategories = selectedSwearCategories(categories);
+  const timeline = meter.timeline || [];
+  const messages = timeline.reduce((total, row) => total + Number(row.messages || 0), 0) || Number(meter.directUserMessages || 0);
+  const selectedMessages = selectedCategories.length
+    ? timeline.reduce((total, row) => total + selectedSwearMessages(row, selectedCategories), 0)
+    : Number(meter.swearIndexMessages || 0);
+  const selectedOccurrences = selectedCategories.length
+    ? selectedCategories.reduce((total, category) => total + Number(category.occurrences || 0), 0)
+    : Number(meter.swearIndexOccurrences || 0);
+  return {
+    messages,
+    selectedMessages,
+    selectedOccurrences,
+    rate: messages ? (selectedMessages / messages) * 100 : 0,
+  };
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -41,6 +86,10 @@ function formatBytes(value) {
     index += 1;
   }
   return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[index]}`;
+}
+
+function formatPercent(value) {
+  return `${Number(value || 0).toFixed(Number(value || 0) >= 10 ? 1 : 2)}%`;
 }
 
 function formatDate(value) {
@@ -348,6 +397,155 @@ function renderLineChart(selector, series, days) {
   });
 }
 
+function renderSwearMeterChart(selector, meter) {
+  const container = document.querySelector(selector);
+  const timeline = meter.timeline || [];
+  const categories = meter.categories || [];
+  const rows = [...(timeline || [])].filter((row) => row.day).sort((a, b) => String(a.day).localeCompare(String(b.day)));
+  if (!rows.length) {
+    container.innerHTML = emptyHtml();
+    return;
+  }
+  const width = 960;
+  const height = 300;
+  const pad = { left: 46, right: 18, top: 18, bottom: 32 };
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+  const visibleCategories = selectedSwearCategories(categories);
+  const selectedCounts = rows.map((row) => selectedSwearMessages(row, visibleCategories));
+  const selectedRates = rows.map((row, index) => (Number(row.messages || 0) ? (selectedCounts[index] / Number(row.messages || 0)) * 100 : 0));
+  const categoryCountMax = Math.max(
+    1,
+    ...rows.map((row) => visibleCategories.reduce((total, category) => total + Number(((row.categories || {})[category.id] || {}).messages || 0), 0)),
+  );
+  const maxBarValue = categoryCountMax;
+  const maxRate = Math.max(1, ...selectedRates);
+  const barStep = innerWidth / Math.max(1, rows.length);
+  const barWidth = Math.max(3, Math.min(22, barStep * 0.62));
+  const x = (index) => pad.left + index * barStep + barStep / 2;
+  const yBar = (value) => pad.top + (1 - Number(value || 0) / maxBarValue) * innerHeight;
+  const yRate = (value) => pad.top + (1 - Number(value || 0) / maxRate) * innerHeight;
+  const grid = [0, 0.5, 1]
+    .map((ratio) => {
+      const yy = pad.top + ratio * innerHeight;
+      return `<line x1="${pad.left}" y1="${yy}" x2="${width - pad.right}" y2="${yy}" class="chart-grid" />`;
+    })
+    .join("");
+  const bars = rows
+    .map((row, index) => {
+      let cursor = height - pad.bottom;
+      return visibleCategories
+        .map((category) => {
+          const count = Number(((row.categories || {})[category.id] || {}).messages || 0);
+          const barHeight = Math.max(0, height - pad.bottom - yBar(count));
+          cursor -= barHeight;
+          const xx = x(index) - barWidth / 2;
+          const color = swearCategoryColor(category, categories);
+          return `<rect class="swear-chart-bar" x="${xx.toFixed(1)}" y="${cursor.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" style="fill:${escapeHtml(color)}" opacity="0.78" />`;
+        })
+        .join("");
+    })
+    .join("");
+  const linePoints = rows.map((row, index) => `${x(index).toFixed(1)},${yRate(selectedRates[index]).toFixed(1)}`).join(" ");
+  const points = rows
+    .map(
+      (row, index) => `
+        <g class="chart-point-group" data-day="${escapeHtml(row.day)}">
+          <circle class="chart-hit-point" cx="${x(index).toFixed(1)}" cy="${yRate(selectedRates[index]).toFixed(1)}" r="11" tabindex="0" aria-label="${escapeHtml(`${row.day}: index ${formatPercent(selectedRates[index])} (${formatNumber(selectedCounts[index])})`)}"></circle>
+          <circle class="swear-chart-point" cx="${x(index).toFixed(1)}" cy="${yRate(selectedRates[index]).toFixed(1)}" r="3" />
+        </g>
+      `,
+    )
+    .join("");
+  const ticks = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ index }) => index === 0 || index === rows.length - 1 || index % Math.ceil(rows.length / 4) === 0)
+    .map(({ row, index }) => `<text x="${x(index)}" y="${height - 8}" class="chart-label" text-anchor="middle">${escapeHtml(String(row.day).slice(5))}</text>`)
+    .join("");
+  container.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" aria-hidden="true">
+      ${grid}
+      <text x="8" y="${pad.top + 4}" class="chart-label">${escapeHtml(formatCompact(maxBarValue))}</text>
+      <text x="${width - 4}" y="${pad.top + 4}" class="chart-label" text-anchor="end">${escapeHtml(formatPercent(maxRate))}</text>
+      <text x="8" y="${height - pad.bottom + 4}" class="chart-label">0</text>
+      <line class="chart-active-line" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}" />
+      ${bars}
+      <polyline class="chart-line swear-chart-line" points="${linePoints}" />
+      ${points}
+      ${ticks}
+    </svg>
+    <div class="chart-tooltip" role="status"></div>
+  `;
+  const tooltip = container.querySelector(".chart-tooltip");
+  const activeGuide = container.querySelector(".chart-active-line");
+  const pointGroups = [...container.querySelectorAll(".chart-point-group")];
+  const dayXs = rows.map((row, index) => ({ day: row.day, x: x(index), row, rate: selectedRates[index], selectedCount: selectedCounts[index] }));
+  const hideTooltip = () => {
+    tooltip.classList.remove("visible");
+    activeGuide.classList.remove("visible");
+    pointGroups.forEach((group) => group.classList.remove("active"));
+  };
+  const showTooltip = (event, item) => {
+    const parts = [];
+    if (visibleCategories.length !== 1) {
+      parts.push(`<span><i style="background:var(--red-ink)"></i>Index: ${escapeHtml(formatPercent(item.rate))} (${escapeHtml(formatNumber(item.selectedCount))})</span>`);
+    }
+    visibleCategories.forEach((category) => {
+      const values = (item.row.categories || {})[category.id] || {};
+      const messages = Number(values.messages || 0);
+      if (messages > 0 || visibleCategories.length === 1) {
+        const color = swearCategoryColor(category, categories);
+        const percent = Number(item.row.messages || 0) ? (messages / Number(item.row.messages || 0)) * 100 : 0;
+        parts.push(`<span><i style="background:${escapeHtml(color)}"></i>${escapeHtml(category.label)}: ${escapeHtml(formatPercent(percent))} (${escapeHtml(formatNumber(messages))})</span>`);
+      }
+    });
+    if (!parts.length) {
+      hideTooltip();
+      return;
+    }
+    tooltip.innerHTML = `<strong>${escapeHtml(item.day)}</strong>${parts.join("")}`;
+    tooltip.classList.add("visible");
+    activeGuide.setAttribute("x1", item.x.toFixed(1));
+    activeGuide.setAttribute("x2", item.x.toFixed(1));
+    activeGuide.classList.add("visible");
+    pointGroups.forEach((group) => group.classList.toggle("active", group.dataset.day === item.day));
+    const rect = container.getBoundingClientRect();
+    const eventX = event.clientX || rect.left + (item.x / width) * rect.width;
+    const eventY = event.clientY || rect.top + pad.top;
+    const left = Math.min(Math.max(eventX - rect.left + 12, 8), rect.width - tooltip.offsetWidth - 8);
+    const top = Math.min(Math.max(eventY - rect.top - 38, 8), rect.height - tooltip.offsetHeight - 8);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  };
+  container.addEventListener("mousemove", (event) => {
+    const svg = container.querySelector("svg");
+    const rect = svg.getBoundingClientRect();
+    const svgX = ((event.clientX - rect.left) / rect.width) * width;
+    const svgY = ((event.clientY - rect.top) / rect.height) * height;
+    const nearest = dayXs.reduce(
+      (best, item) => {
+        const distance = Math.abs(item.x - svgX);
+        return distance < best.distance ? { item, distance } : best;
+      },
+      { item: null, distance: Infinity },
+    );
+    const step = innerWidth / Math.max(1, rows.length - 1);
+    if (!nearest.item || svgX < pad.left - step / 2 || svgX > width - pad.right + step / 2 || svgY < pad.top - 14 || svgY > height - pad.bottom + 22) {
+      hideTooltip();
+      return;
+    }
+    showTooltip(event, nearest.item);
+  });
+  container.addEventListener("mouseleave", hideTooltip);
+  pointGroups.forEach((group) => {
+    group.querySelector(".chart-hit-point").addEventListener("focus", (event) => {
+      const item = dayXs.find((day) => day.day === group.dataset.day);
+      if (item) showTooltip(event, item);
+    });
+    group.querySelector(".chart-hit-point").addEventListener("blur", hideTooltip);
+  });
+}
+
 function renderUsagePage(data) {
   const overview = selectedOverview(data);
   setHtml(
@@ -359,6 +557,7 @@ function renderUsagePage(data) {
       metric("Logs", formatCompact(overview.logs), `${formatNumber(overview.failures)} command failures`),
     ].join(""),
   );
+  renderSwearMeter(data);
   const meta = data.meta || {};
   document.querySelector("#generated-at").textContent = `Generated ${formatDate(meta.generatedAt)} in ${meta.scanSeconds ?? "?"}s`;
 
@@ -391,6 +590,68 @@ function renderUsagePage(data) {
       else selectedSeries.delete(id);
       if (selectedSeries.size === 0) selectedSeries.add("total");
       renderUsagePage(snapshot);
+    });
+  });
+}
+
+function renderSwearMeter(data) {
+  const meter = (((data.codex || {}).sessions || {}).swearMeter || {});
+  const visible = hasSystem("codex") && Number(meter.directUserMessages || 0) > 0;
+  if (!visible) {
+    setHtml("#swear-meter-summary", emptyHtml("No Codex user messages found."));
+    return;
+  }
+  if (!swearLegendInitialized) {
+    (meter.categories || []).slice(0, 3).forEach((category) => swearSeriesVisible.add(`category:${category.id}`));
+    swearLegendInitialized = true;
+  }
+  const selectedTotals = selectedSwearTotals(meter);
+  setHtml(
+    "#swear-meter-summary",
+    `
+      <div class="mini-metrics">
+        ${metric("Index", formatPercent(selectedTotals.rate), `${formatNumber(selectedTotals.selectedMessages)} of ${formatNumber(selectedTotals.messages)} user messages`)}
+        ${metric("Hits", formatCompact(selectedTotals.selectedOccurrences), `${formatCompact(meter.swearIndexOccurrences)} total occurrences`)}
+      </div>
+      <div id="swear-meter-chart" class="chart swear-chart" role="img" aria-label="Swear index over time"></div>
+      <div id="swear-meter-legend" class="legend-list swear-legend"></div>
+    `,
+  );
+  renderSwearMeterChart("#swear-meter-chart", meter);
+  renderSwearMeterLegend(meter);
+}
+
+function renderSwearMeterLegend(meter) {
+  const categories = meter.categories || [];
+  const categoryItems = categories.map((category) => ({
+    id: `category:${category.id}`,
+    label: category.label,
+    value: category.messages,
+    color: swearCategoryColor(category, categories),
+    note: `${formatCompact(category.occurrences)} occurrences, ${formatCompact(category.score)} score`,
+  }));
+  setHtml(
+    "#swear-meter-legend",
+    categoryItems
+      .map(
+        (item) => `
+          <label class="legend-item">
+            <input type="checkbox" data-swear-series-id="${escapeHtml(item.id)}" ${swearSeriesVisible.has(item.id) ? "checked" : ""} />
+            <span class="legend-swatch" style="background:${escapeHtml(item.color)}"></span>
+            <span>
+              <strong>${escapeHtml(item.label)}</strong>
+            </span>
+          </label>
+        `,
+      )
+      .join(""),
+  );
+  document.querySelectorAll("[data-swear-series-id]").forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      const id = event.currentTarget.dataset.swearSeriesId;
+      if (event.currentTarget.checked) swearSeriesVisible.add(id);
+      else swearSeriesVisible.delete(id);
+      if (snapshot) renderSwearMeter(snapshot);
     });
   });
 }
@@ -445,11 +706,22 @@ function renderProjectPage(data) {
         { label: "Updated", value: (row) => row.updated, format: formatDate },
         { label: "Title", value: (row) => row.title || "[untitled]" },
         { label: "Source", value: (row) => row.source || "" },
+        {
+          label: "Swears",
+          value: (row) => threadSwearMeter(data, row).swearIndexMessages || 0,
+          format: (value) => formatNumber(value),
+          num: true,
+        },
         { label: "Tokens", value: (row) => row.tokens, format: formatCompact, num: true },
       ],
       project.recentThreads || [],
     ),
   );
+}
+
+function threadSwearMeter(data, thread) {
+  if (!thread?.id) return {};
+  return ((((data.codex || {}).sessions || {}).swearByThread || {})[thread.id]) || {};
 }
 
 function renderSourceHealth(data) {
@@ -550,11 +822,44 @@ function renderSourcesPage(data) {
   );
 }
 
+function renderAboutPage(data) {
+  const about = data.about || {};
+  const meter = (((data.codex || {}).sessions || {}).swearMeter || {});
+  const methods = about.swearMeterMethods || [];
+  setHtml(
+    "#about-metrics",
+    [
+      metric("User messages", formatNumber(meter.directUserMessages), "Scanned locally"),
+      metric("Index messages", formatNumber(meter.swearIndexMessages), `${formatPercent(meter.swearIndexRate)} of user messages`),
+      metric("Hits", formatCompact(meter.swearIndexOccurrences), "Matched phrases"),
+      metric("Word sets", formatNumber(methods.length), `${formatNumber(methods.reduce((total, method) => total + Number(method.termCount || 0), 0))} terms`),
+    ].join(""),
+  );
+  setHtml(
+    "#about-word-sets",
+    methods
+      .map(
+        (method) => `
+          <section class="word-set">
+            <div class="word-set-heading">
+              <h3>${escapeHtml(method.label)}</h3>
+              <span>${escapeHtml(formatNumber(method.termCount))} terms</span>
+            </div>
+            <p>${escapeHtml(method.note)}</p>
+            <p class="word-list">${escapeHtml((method.terms || []).join(", "))}</p>
+          </section>
+        `,
+      )
+      .join(""),
+  );
+}
+
 function render(data) {
   snapshot = data;
   renderUsagePage(data);
   renderProjectPage(data);
   renderSourcesPage(data);
+  renderAboutPage(data);
 }
 
 function updateSystemFilters() {
@@ -571,6 +876,7 @@ function updateSystemFilters() {
 function switchPage(pageName) {
   pages.forEach((page) => page.classList.toggle("active", page.id === `page-${pageName}`));
   pageButtons.forEach((button) => button.classList.toggle("active", button.dataset.page === pageName));
+  if (utilityBar) utilityBar.hidden = pageName === "about";
 }
 
 async function loadSnapshot({ refresh = false } = {}) {
