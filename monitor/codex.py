@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter, defaultdict
+from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,13 @@ TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning
 MAX_FULL_SESSION_BYTES = 2_000_000
 SESSION_TAIL_BYTES = 256_000
 MAX_PARSED_SESSION_FILES = 450
-MAX_SWEAR_SESSION_FILES = 550
-MAX_FULL_SWEAR_SESSION_BYTES = MAX_FULL_SESSION_BYTES
+SWEAR_CANDIDATE_MARKERS = (
+    b"session_meta",
+    b"user_message",
+    b'"role":"user"',
+    b'"role": "user"',
+)
+_SWEAR_SCAN_CACHE: dict[tuple[str, str, str, int, int], dict[str, Any]] = {}
 
 
 def _empty_token_totals() -> dict[str, int]:
@@ -44,8 +50,8 @@ def add_token_totals(target: dict[str, int], usage: dict[str, Any] | None) -> No
             continue
 
 
-def _base_session(path: Path, *, archive: str, root: Path | None = None) -> dict[str, Any]:
-    stat = path.stat()
+def _base_session(path: Path, *, archive: str, root: Path | None = None, file_stat: Any | None = None) -> dict[str, Any]:
+    stat = file_stat or path.stat()
     return {
         "id": None,
         "title": None,
@@ -123,35 +129,31 @@ def scan_session_file_fast(path: Path, *, archive: str, root: Path | None = None
 
 
 def scan_session_swear_meter(path: Path, *, archive: str, root: Path | None = None) -> dict[str, Any]:
-    session = _base_session(path, archive=archive, root=root)
-    if session["bytes"] > MAX_FULL_SWEAR_SESSION_BYTES:
-        session["partial"] = True
-        try:
-            with path.open("rb") as handle:
-                head = handle.read(min(262_144, session["bytes"]))
-                handle.seek(max(0, session["bytes"] - SESSION_TAIL_BYTES))
-                tail = handle.read()
-        except OSError as exc:
-            session["error"] = safe_preview(exc)
-            return _finalize_session(path, session)
-        chunks = [head, tail.split(b"\n", 1)[-1]]
-        for chunk in chunks:
-            for raw_line in chunk.decode("utf-8", errors="replace").splitlines():
-                _apply_swear_candidate_line(session, raw_line)
-    else:
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
+    stat = path.stat()
+    cache_key = (str(path), archive, str(root or ""), int(stat.st_size), int(stat.st_mtime_ns))
+    cached = _SWEAR_SCAN_CACHE.get(cache_key)
+    if cached is not None:
+        return deepcopy(cached)
+    session = _base_session(path, archive=archive, root=root, file_stat=stat)
+    try:
+        with path.open("rb") as handle:
             for raw_line in handle:
                 _apply_swear_candidate_line(session, raw_line)
+    except OSError as exc:
+        session["error"] = safe_preview(exc)
+        return _finalize_session(path, session)
     session["swearOnly"] = True
-    return _finalize_session(path, session)
+    finalized = _finalize_session(path, session)
+    _SWEAR_SCAN_CACHE[cache_key] = deepcopy(finalized)
+    return finalized
 
 
-def _apply_swear_candidate_line(session: dict[str, Any], raw_line: str) -> None:
+def _apply_swear_candidate_line(session: dict[str, Any], raw_line: bytes) -> None:
     if not raw_line.strip():
         return
-    if "session_meta" not in raw_line and "user_message" not in raw_line and '"role":"user"' not in raw_line and '"role": "user"' not in raw_line:
+    if not any(marker in raw_line for marker in SWEAR_CANDIDATE_MARKERS):
         return
-    _apply_session_line(session, raw_line)
+    _apply_session_line(session, raw_line.decode("utf-8", errors="replace"))
 
 
 def _apply_session_line(session: dict[str, Any], raw_line: str) -> None:
@@ -306,17 +308,29 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
     for archive, root in roots:
         if not root.exists():
             continue
-        paths = sorted(root.rglob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True)
-        for index, path in enumerate(paths):
+        entries: list[tuple[float, int, Path]] = []
+        for path in root.rglob("*.jsonl"):
+            try:
+                stat = path.stat()
+            except OSError as exc:
+                all_sessions.append(
+                    {
+                        "id": _id_from_rollout_name(path.name),
+                        "archive": archive,
+                        "path": safe_relpath(path, codex_root),
+                        "error": safe_preview(exc),
+                    }
+                )
+                continue
+            entries.append((stat.st_mtime, stat.st_size, path))
+        entries.sort(key=lambda item: item[0], reverse=True)
+        for index, (_, size, path) in enumerate(entries):
             try:
                 if index >= MAX_PARSED_SESSION_FILES:
-                    if index < MAX_SWEAR_SESSION_FILES:
-                        session = scan_session_swear_meter(path, archive=archive, root=codex_root)
-                        session["skipped"] = True
-                    else:
-                        session = _finalize_session(path, {**_base_session(path, archive=archive, root=codex_root), "skipped": True})
+                    session = scan_session_swear_meter(path, archive=archive, root=codex_root)
+                    session["skipped"] = True
                     skipped_files += 1
-                elif path.stat().st_size > MAX_FULL_SESSION_BYTES:
+                elif size > MAX_FULL_SESSION_BYTES:
                     session = scan_session_file_fast(path, archive=archive, root=codex_root)
                     parsed_files += 1
                 else:

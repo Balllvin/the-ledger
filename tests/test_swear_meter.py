@@ -153,9 +153,7 @@ class SwearMeterTests(unittest.TestCase):
 
     def test_collect_sessions_lightweight_scans_skipped_files_for_swear_meter(self) -> None:
         old_limit = codex.MAX_PARSED_SESSION_FILES
-        old_swear_limit = codex.MAX_SWEAR_SESSION_FILES
         codex.MAX_PARSED_SESSION_FILES = 1
-        codex.MAX_SWEAR_SESSION_FILES = 10
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -192,7 +190,58 @@ class SwearMeterTests(unittest.TestCase):
             self.assertEqual(summary["swearMeter"]["swearIndexMessages"], 1)
         finally:
             codex.MAX_PARSED_SESSION_FILES = old_limit
-            codex.MAX_SWEAR_SESSION_FILES = old_swear_limit
+
+    def test_swear_meter_lightweight_scan_ignores_non_candidate_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sessions = root / "sessions"
+            sessions.mkdir()
+            path = sessions / "rollout-only.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        "{not json",
+                        json.dumps(
+                            {
+                                "timestamp": "2025-01-06T09:00:00Z",
+                                "type": "event_msg",
+                                "payload": {"type": "user_message", "message": "this is bullshit"},
+                            }
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            stats = codex.scan_session_swear_meter(path, archive="active", root=root)
+
+        self.assertNotIn("[invalid_json]", stats["eventCounts"])
+        self.assertEqual(stats["swearMeter"]["directUserMessages"], 1)
+        self.assertEqual(stats["swearMeter"]["swearIndexMessages"], 1)
+
+    def test_swear_meter_cache_returns_isolated_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sessions = root / "sessions"
+            sessions.mkdir()
+            path = sessions / "rollout-cache.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "timestamp": "2025-01-06T09:00:00Z",
+                        "type": "event_msg",
+                        "payload": {"type": "user_message", "message": "what the hell"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            first = codex.scan_session_swear_meter(path, archive="active", root=root)
+            first["swearMeter"]["directUserMessages"] = 0
+            second = codex.scan_session_swear_meter(path, archive="active", root=root)
+
+        self.assertEqual(second["swearMeter"]["directUserMessages"], 1)
+        self.assertEqual(second["swearMeter"]["swearIndexMessages"], 1)
 
 
 if __name__ == "__main__":
