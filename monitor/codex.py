@@ -400,6 +400,13 @@ def _swear_meter_from_finalized(summary: dict[str, Any]) -> dict[str, Any]:
     meter["swearIndexOccurrences"] = int(summary.get("swearIndexOccurrences") or 0)
     meter["swearIndexScore"] = int(summary.get("swearIndexScore") or 0)
     meter["groups"].update(summary.get("groups") or {})
+    for row in summary.get("categories") or []:
+        category = row.get("id")
+        if not category:
+            continue
+        meter["categories"][str(category)] += int(row.get("occurrences") or 0)
+        meter["categoryMessages"][str(category)] += int(row.get("messages") or 0)
+        meter["categoryScores"][str(category)] += int(row.get("score") or 0)
     for row in summary.get("terms") or []:
         term = row.get("term")
         if not term:
@@ -412,6 +419,11 @@ def _swear_meter_from_finalized(summary: dict[str, Any]) -> dict[str, Any]:
             continue
         meter["timeline"][(str(day), "messages")] += int(row.get("messages") or 0)
         meter["timeline"][(str(day), "swearMessages")] += int(row.get("swearMessages") or 0)
+        for category, values in (row.get("categories") or {}).items():
+            if not isinstance(values, dict):
+                continue
+            meter["timeline"][(str(day), f"categoryMessages:{category}")] += int(values.get("messages") or 0)
+            meter["timeline"][(str(day), f"category:{category}")] += int(values.get("occurrences") or 0)
     return meter
 
 

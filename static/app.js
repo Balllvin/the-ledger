@@ -10,9 +10,16 @@ let snapshot = null;
 let selectedSeries = new Set(["total"]);
 let activeSystems = new Set(["codex", "opencode"]);
 let swearSeriesVisible = new Set(["messages", "rate"]);
+let swearLegendInitialized = false;
 let snapshotEvents = null;
 
 const SERIES_COLORS = ["#151515", "#1f6c9f", "#346538", "#956400", "#9f2f2d", "#5f4b8b", "#7a5b2e", "#3f6f72"];
+const SWEAR_CATEGORY_COLORS = ["#9f2f2d", "#1f6c9f", "#346538", "#956400", "#5f4b8b", "#3f6f72", "#7a5b2e", "#2f3f58", "#8b3f62"];
+
+function swearCategoryColor(category, categories) {
+  const index = Math.max(0, categories.findIndex((item) => item.id === category.id));
+  return SWEAR_CATEGORY_COLORS[index % SWEAR_CATEGORY_COLORS.length];
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -353,8 +360,10 @@ function renderLineChart(selector, series, days) {
   });
 }
 
-function renderSwearMeterChart(selector, timeline) {
+function renderSwearMeterChart(selector, meter) {
   const container = document.querySelector(selector);
+  const timeline = meter.timeline || [];
+  const categories = meter.categories || [];
   const rows = [...(timeline || [])].filter((row) => row.day).sort((a, b) => String(a.day).localeCompare(String(b.day)));
   if (!rows.length) {
     container.innerHTML = emptyHtml();
@@ -366,12 +375,18 @@ function renderSwearMeterChart(selector, timeline) {
   const innerWidth = width - pad.left - pad.right;
   const innerHeight = height - pad.top - pad.bottom;
   const maxMessages = Math.max(1, ...rows.map((row) => Number(row.messages || 0)));
+  const visibleCategories = categories.filter((category) => swearSeriesVisible.has(`category:${category.id}`));
+  const categoryMax = Math.max(
+    1,
+    ...visibleCategories.flatMap((category) => rows.map((row) => Number(((row.categories || {})[category.id] || {}).messages || 0))),
+  );
+  const maxCount = Math.max(maxMessages, categoryMax);
   const rates = rows.map((row) => (Number(row.messages || 0) ? (Number(row.swearMessages || 0) / Number(row.messages || 0)) * 100 : 0));
   const maxRate = Math.max(1, ...rates);
   const barStep = innerWidth / Math.max(1, rows.length);
   const barWidth = Math.max(3, Math.min(22, barStep * 0.62));
   const x = (index) => pad.left + index * barStep + barStep / 2;
-  const yMessages = (value) => pad.top + (1 - Number(value || 0) / maxMessages) * innerHeight;
+  const yCount = (value) => pad.top + (1 - Number(value || 0) / maxCount) * innerHeight;
   const yRate = (value) => pad.top + (1 - Number(value || 0) / maxRate) * innerHeight;
   const showMessages = swearSeriesVisible.has("messages");
   const showRate = swearSeriesVisible.has("rate");
@@ -386,13 +401,25 @@ function renderSwearMeterChart(selector, timeline) {
         .map((row, index) => {
           const messages = Number(row.messages || 0);
           const xx = x(index) - barWidth / 2;
-          const yy = yMessages(messages);
+          const yy = yCount(messages);
           const barHeight = Math.max(0, height - pad.bottom - yy);
           return `<rect class="swear-chart-bar" x="${xx.toFixed(1)}" y="${yy.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" />`;
         })
         .join("")
     : "";
   const linePoints = rows.map((row, index) => `${x(index).toFixed(1)},${yRate(rates[index]).toFixed(1)}`).join(" ");
+  const categoryLines = visibleCategories
+    .map((category) => {
+      const color = swearCategoryColor(category, categories);
+      const points = rows
+        .map((row, index) => {
+          const value = Number(((row.categories || {})[category.id] || {}).messages || 0);
+          return `${x(index).toFixed(1)},${yCount(value).toFixed(1)}`;
+        })
+        .join(" ");
+      return `<polyline class="chart-line swear-category-line" points="${points}" stroke="${escapeHtml(color)}" />`;
+    })
+    .join("");
   const points = showRate
     ? rows
         .map(
@@ -418,6 +445,7 @@ function renderSwearMeterChart(selector, timeline) {
       <line class="chart-active-line" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}" />
       ${bars}
       ${showRate ? `<polyline class="chart-line swear-chart-line" points="${linePoints}" />` : ""}
+      ${categoryLines}
       ${points}
       ${ticks}
     </svg>
@@ -436,6 +464,14 @@ function renderSwearMeterChart(selector, timeline) {
     const parts = [];
     if (showMessages) parts.push(`<span><i style="background:var(--border-strong)"></i>User messages: ${escapeHtml(formatNumber(item.row.messages))}</span>`);
     if (showRate) parts.push(`<span><i style="background:var(--red-ink)"></i>Swear index: ${escapeHtml(formatPercent(item.rate))} (${escapeHtml(formatNumber(item.row.swearMessages))})</span>`);
+    visibleCategories.forEach((category) => {
+      const values = (item.row.categories || {})[category.id] || {};
+      const messages = Number(values.messages || 0);
+      if (messages > 0) {
+        const color = swearCategoryColor(category, categories);
+        parts.push(`<span><i style="background:${escapeHtml(color)}"></i>${escapeHtml(category.label)}: ${escapeHtml(formatNumber(messages))}</span>`);
+      }
+    });
     if (!parts.length) {
       hideTooltip();
       return;
@@ -564,16 +600,29 @@ function renderSwearMeter(data) {
       <div class="term-list" aria-label="Top swear-index terms">${termRows}</div>
     `,
   );
-  renderSwearMeterChart("#swear-meter-chart", meter.timeline || []);
+  if (!swearLegendInitialized) {
+    (meter.categories || []).slice(0, 3).forEach((category) => swearSeriesVisible.add(`category:${category.id}`));
+    swearLegendInitialized = true;
+  }
+  renderSwearMeterChart("#swear-meter-chart", meter);
   renderSwearMeterLegend(meter);
 }
 
 function renderSwearMeterLegend(meter) {
+  const categories = meter.categories || [];
+  const categoryItems = categories.map((category) => ({
+    id: `category:${category.id}`,
+    label: category.label,
+    value: category.messages,
+    color: swearCategoryColor(category, categories),
+    note: `${formatCompact(category.occurrences)} occurrences, ${formatCompact(category.score)} score`,
+  }));
   setHtml(
     "#swear-meter-legend",
     [
       { id: "messages", label: "User messages", value: meter.directUserMessages, color: "var(--border-strong)", note: "Daily scanned messages" },
       { id: "rate", label: "Swear index", value: meter.swearIndexMessages, color: "var(--red-ink)", note: `${formatPercent(meter.swearIndexRate)} overall` },
+      ...categoryItems,
     ]
       .map(
         (item) => `

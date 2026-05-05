@@ -13,11 +13,18 @@ from monitor.swear_meter import analyze_user_message, match_message, should_skip
 class SwearMeterTests(unittest.TestCase):
     def test_match_message_uses_word_boundaries(self) -> None:
         self.assertEqual(match_message("the tissue sample is fine"), [])
-        self.assertEqual(match_message("what the hell is this")[0]["term"], "what the hell")
+        self.assertEqual(match_message("what the hell is this")[0]["term"], "what the hell is this")
         terms = {hit["term"] for hit in match_message("holy shit, this is nonsense and not even close")}
         self.assertIn("holy shit", terms)
         self.assertIn("this is nonsense", terms)
         self.assertIn("not even close", terms)
+
+    def test_match_message_deduplicates_overlapping_terms(self) -> None:
+        terms = {hit["term"]: hit for hit in match_message("what the actual fuck is going on")}
+
+        self.assertIn("what the actual fuck", terms)
+        self.assertNotIn("fuck", terms)
+        self.assertEqual(sum(hit["count"] for hit in terms.values()), 1)
 
     def test_skip_scaffold_and_automations(self) -> None:
         self.assertTrue(should_skip_message("# AGENTS.md instructions\n..."))
@@ -33,6 +40,8 @@ class SwearMeterTests(unittest.TestCase):
         self.assertGreaterEqual(result["swearIndexOccurrences"], 2)
         self.assertEqual(result["timeline"][("2025-01-06", "messages")], 1)
         self.assertEqual(result["timeline"][("2025-01-06", "swearMessages")], 1)
+        self.assertEqual(result["timeline"][("2025-01-06", "categoryMessages:wtf_moment")], 1)
+        self.assertGreaterEqual(result["categories"]["wtf_moment"], 1)
 
     def test_scan_session_file_adds_privacy_safe_swear_meter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
