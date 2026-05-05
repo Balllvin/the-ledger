@@ -8,7 +8,7 @@ from pathlib import Path
 import monitor.codex as codex
 from monitor.codex import collect_sessions, scan_session_file
 from monitor.sanitize import sanitize
-from monitor.swear_meter import analyze_user_message, finalize_swear_meter, match_message, should_skip_message
+from monitor.swear_meter import analyze_user_message, finalize_swear_meter, match_message, should_skip_message, swear_meter_methods
 
 
 class SwearMeterTests(unittest.TestCase):
@@ -19,6 +19,16 @@ class SwearMeterTests(unittest.TestCase):
         self.assertIn("holy shit", terms)
         self.assertIn("this is nonsense", terms)
         self.assertIn("not even close", terms)
+
+    def test_swear_meter_methods_exposes_word_sets(self) -> None:
+        methods = swear_meter_methods()
+        hard = next(method for method in methods if method["id"] == "hard_swearing")
+
+        self.assertGreaterEqual(len(methods), 10)
+        self.assertEqual(hard["label"], "Hard Swearing")
+        self.assertIn("fuck", hard["terms"])
+        self.assertEqual(hard["termCount"], len(hard["terms"]))
+        self.assertTrue(hard["note"])
 
     def test_match_message_deduplicates_overlapping_terms(self) -> None:
         terms = {hit["term"]: hit for hit in match_message("what the actual fuck is going on")}

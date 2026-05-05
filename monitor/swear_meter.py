@@ -27,6 +27,19 @@ SWEAR_INDEX_GROUPS = frozenset(
 
 SWEAR_INDEX_EXCLUDED_TERMS: set[str] = set()
 
+SWEAR_INDEX_METHOD_NOTES = {
+    "hard_swearing": "Direct profanity and strong insults.",
+    "soft_swearing": "Milder expletives and softened swears.",
+    "wtf_moment": "Confusion spikes, disbelief, and what-is-going-on moments.",
+    "anger_callout": "Direct frustration at the assistant or the work.",
+    "incomplete_failure": "Broken, unfinished, unusable, or failed work.",
+    "trust_break": "Claims that the assistant guessed, faked, or made things up.",
+    "quality_rejection": "Strong rejection of quality, taste, or usefulness.",
+    "unacceptable_boundary": "No-shortcut language and hard stop boundaries.",
+    "rework_cost": "Redo, wasted-time, and start-over pressure.",
+    "ai_coding_failure": "Coding-agent failures such as loops, bad code, and ignored instructions.",
+}
+
 SWEAR_INDEX_LEXICON = {
     "hard_swearing": {
         "group": "swearing",
@@ -570,6 +583,24 @@ SWEAR_INDEX_LEXICON = {
         ],
     },
 }
+
+
+def swear_meter_methods() -> list[dict[str, Any]]:
+    methods = []
+    for category, spec in SWEAR_INDEX_LEXICON.items():
+        terms = list(dict.fromkeys(str(term) for term in spec["terms"]))
+        methods.append(
+            {
+                "id": category,
+                "label": str(spec.get("label") or category.replace("_", " ").title()),
+                "group": str(spec["group"]),
+                "weight": int(spec["weight"]),
+                "note": SWEAR_INDEX_METHOD_NOTES.get(category, ""),
+                "termCount": len(terms),
+                "terms": terms,
+            }
+        )
+    return methods
 
 
 @dataclass(frozen=True)

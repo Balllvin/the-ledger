@@ -5,6 +5,7 @@ const pageButtons = [...document.querySelectorAll(".tab-button")];
 const pages = [...document.querySelectorAll(".page")];
 const projectSelect = document.querySelector("#project-select");
 const systemToggles = [...document.querySelectorAll("[data-system-toggle]")];
+const utilityBar = document.querySelector(".utility-bar");
 
 let snapshot = null;
 let selectedSeries = new Set(["total"]);
@@ -821,11 +822,44 @@ function renderSourcesPage(data) {
   );
 }
 
+function renderAboutPage(data) {
+  const about = data.about || {};
+  const meter = (((data.codex || {}).sessions || {}).swearMeter || {});
+  const methods = about.swearMeterMethods || [];
+  setHtml(
+    "#about-metrics",
+    [
+      metric("User messages", formatNumber(meter.directUserMessages), "Scanned locally"),
+      metric("Index messages", formatNumber(meter.swearIndexMessages), `${formatPercent(meter.swearIndexRate)} of user messages`),
+      metric("Hits", formatCompact(meter.swearIndexOccurrences), "Matched phrases"),
+      metric("Word sets", formatNumber(methods.length), `${formatNumber(methods.reduce((total, method) => total + Number(method.termCount || 0), 0))} terms`),
+    ].join(""),
+  );
+  setHtml(
+    "#about-word-sets",
+    methods
+      .map(
+        (method) => `
+          <section class="word-set">
+            <div class="word-set-heading">
+              <h3>${escapeHtml(method.label)}</h3>
+              <span>${escapeHtml(formatNumber(method.termCount))} terms</span>
+            </div>
+            <p>${escapeHtml(method.note)}</p>
+            <p class="word-list">${escapeHtml((method.terms || []).join(", "))}</p>
+          </section>
+        `,
+      )
+      .join(""),
+  );
+}
+
 function render(data) {
   snapshot = data;
   renderUsagePage(data);
   renderProjectPage(data);
   renderSourcesPage(data);
+  renderAboutPage(data);
 }
 
 function updateSystemFilters() {
@@ -842,6 +876,7 @@ function updateSystemFilters() {
 function switchPage(pageName) {
   pages.forEach((page) => page.classList.toggle("active", page.id === `page-${pageName}`));
   pageButtons.forEach((button) => button.classList.toggle("active", button.dataset.page === pageName));
+  if (utilityBar) utilityBar.hidden = pageName === "about";
 }
 
 async function loadSnapshot({ refresh = false } = {}) {

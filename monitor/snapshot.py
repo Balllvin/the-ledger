@@ -10,6 +10,7 @@ from .discovery import discover_local_sources, preferred_codex_root, preferred_l
 from .hermes import collect_hermes
 from .lattice import collect_lattice
 from .opencode import collect_opencode
+from .swear_meter import swear_meter_methods
 from .utils import default_home, utc_now_iso
 
 
@@ -35,6 +36,10 @@ def collect_snapshot(*, include_hermes: bool = True, home: Path | None = None) -
         "opencode": opencode,
         "lattice": lattice,
         "hermes": hermes,
+        "about": {
+            "sourceRepo": "https://github.com/petergpt/codex-swear-meter",
+            "swearMeterMethods": swear_meter_methods(),
+        },
     }
     snapshot["overview"] = _overview(snapshot)
     snapshot["meta"]["scanSeconds"] = round(time.perf_counter() - started, 3)
