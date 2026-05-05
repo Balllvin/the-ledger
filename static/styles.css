@@ -623,7 +623,12 @@ select {
 }
 
 .swear-chart {
+  grid-column: 2;
   min-width: 0;
+}
+
+.swear-legend {
+  grid-column: 2;
 }
 
 .swear-chart-bar {
@@ -638,39 +643,6 @@ select {
   fill: var(--red-ink);
   stroke: var(--surface);
   stroke-width: 1.5;
-}
-
-.swear-chart-key {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 6px;
-  color: var(--ink-3);
-  font-family: var(--mono);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.swear-chart-key span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.swear-chart-key i {
-  display: inline-block;
-  width: 12px;
-  height: 8px;
-  border-radius: 2px;
-}
-
-.swear-chart-key .bar {
-  background: var(--border);
-}
-
-.swear-chart-key .line {
-  height: 3px;
-  background: var(--red-ink);
 }
 
 .term-list {
@@ -835,6 +807,11 @@ tr:last-child td {
   .source-grid,
   .swear-meter {
     grid-template-columns: 1fr;
+  }
+
+  .swear-chart,
+  .swear-legend {
+    grid-column: 1;
   }
 
   .metric-grid,

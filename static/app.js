@@ -9,6 +9,7 @@ const systemToggles = [...document.querySelectorAll("[data-system-toggle]")];
 let snapshot = null;
 let selectedSeries = new Set(["total"]);
 let activeSystems = new Set(["codex", "opencode"]);
+let swearSeriesVisible = new Set(["messages", "rate"]);
 let snapshotEvents = null;
 
 const SERIES_COLORS = ["#151515", "#1f6c9f", "#346538", "#956400", "#9f2f2d", "#5f4b8b", "#7a5b2e", "#3f6f72"];
@@ -372,28 +373,38 @@ function renderSwearMeterChart(selector, timeline) {
   const x = (index) => pad.left + index * barStep + barStep / 2;
   const yMessages = (value) => pad.top + (1 - Number(value || 0) / maxMessages) * innerHeight;
   const yRate = (value) => pad.top + (1 - Number(value || 0) / maxRate) * innerHeight;
+  const showMessages = swearSeriesVisible.has("messages");
+  const showRate = swearSeriesVisible.has("rate");
   const grid = [0, 0.5, 1]
     .map((ratio) => {
       const yy = pad.top + ratio * innerHeight;
       return `<line x1="${pad.left}" y1="${yy}" x2="${width - pad.right}" y2="${yy}" class="chart-grid" />`;
     })
     .join("");
-  const bars = rows
-    .map((row, index) => {
-      const messages = Number(row.messages || 0);
-      const xx = x(index) - barWidth / 2;
-      const yy = yMessages(messages);
-      const barHeight = Math.max(0, height - pad.bottom - yy);
-      return `<rect class="swear-chart-bar" x="${xx.toFixed(1)}" y="${yy.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}"><title>${escapeHtml(row.day)}: ${escapeHtml(formatNumber(messages))} user messages</title></rect>`;
-    })
-    .join("");
+  const bars = showMessages
+    ? rows
+        .map((row, index) => {
+          const messages = Number(row.messages || 0);
+          const xx = x(index) - barWidth / 2;
+          const yy = yMessages(messages);
+          const barHeight = Math.max(0, height - pad.bottom - yy);
+          return `<rect class="swear-chart-bar" x="${xx.toFixed(1)}" y="${yy.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" />`;
+        })
+        .join("")
+    : "";
   const linePoints = rows.map((row, index) => `${x(index).toFixed(1)},${yRate(rates[index]).toFixed(1)}`).join(" ");
-  const points = rows
-    .map(
-      (row, index) =>
-        `<circle class="swear-chart-point" cx="${x(index).toFixed(1)}" cy="${yRate(rates[index]).toFixed(1)}" r="3"><title>${escapeHtml(row.day)}: ${escapeHtml(formatPercent(rates[index]))} swear index, ${escapeHtml(formatNumber(row.swearMessages))} counted messages</title></circle>`,
-    )
-    .join("");
+  const points = showRate
+    ? rows
+        .map(
+          (row, index) => `
+            <g class="chart-point-group" data-day="${escapeHtml(row.day)}">
+              <circle class="chart-hit-point" cx="${x(index).toFixed(1)}" cy="${yRate(rates[index]).toFixed(1)}" r="11" tabindex="0" aria-label="${escapeHtml(`${row.day}: ${formatPercent(rates[index])} swear index, ${formatNumber(row.swearMessages)} counted messages`)}"></circle>
+              <circle class="swear-chart-point" cx="${x(index).toFixed(1)}" cy="${yRate(rates[index]).toFixed(1)}" r="3" />
+            </g>
+          `,
+        )
+        .join("")
+    : "";
   const ticks = rows
     .map((row, index) => ({ row, index }))
     .filter(({ index }) => index === 0 || index === rows.length - 1 || index % Math.ceil(rows.length / 4) === 0)
@@ -404,16 +415,72 @@ function renderSwearMeterChart(selector, timeline) {
       ${grid}
       <text x="8" y="${pad.top + 4}" class="chart-label">${escapeHtml(formatPercent(maxRate))}</text>
       <text x="8" y="${height - pad.bottom + 4}" class="chart-label">0%</text>
+      <line class="chart-active-line" x1="${pad.left}" x2="${pad.left}" y1="${pad.top}" y2="${height - pad.bottom}" />
       ${bars}
-      <polyline class="chart-line swear-chart-line" points="${linePoints}" />
+      ${showRate ? `<polyline class="chart-line swear-chart-line" points="${linePoints}" />` : ""}
       ${points}
       ${ticks}
     </svg>
-    <div class="swear-chart-key">
-      <span><i class="bar"></i>User messages</span>
-      <span><i class="line"></i>Swear index</span>
-    </div>
+    <div class="chart-tooltip" role="status"></div>
   `;
+  const tooltip = container.querySelector(".chart-tooltip");
+  const activeGuide = container.querySelector(".chart-active-line");
+  const pointGroups = [...container.querySelectorAll(".chart-point-group")];
+  const dayXs = rows.map((row, index) => ({ day: row.day, x: x(index), row, rate: rates[index] }));
+  const hideTooltip = () => {
+    tooltip.classList.remove("visible");
+    activeGuide.classList.remove("visible");
+    pointGroups.forEach((group) => group.classList.remove("active"));
+  };
+  const showTooltip = (event, item) => {
+    const parts = [];
+    if (showMessages) parts.push(`<span><i style="background:var(--border-strong)"></i>User messages: ${escapeHtml(formatNumber(item.row.messages))}</span>`);
+    if (showRate) parts.push(`<span><i style="background:var(--red-ink)"></i>Swear index: ${escapeHtml(formatPercent(item.rate))} (${escapeHtml(formatNumber(item.row.swearMessages))})</span>`);
+    if (!parts.length) {
+      hideTooltip();
+      return;
+    }
+    tooltip.innerHTML = `<strong>${escapeHtml(item.day)}</strong>${parts.join("")}`;
+    tooltip.classList.add("visible");
+    activeGuide.setAttribute("x1", item.x.toFixed(1));
+    activeGuide.setAttribute("x2", item.x.toFixed(1));
+    activeGuide.classList.add("visible");
+    pointGroups.forEach((group) => group.classList.toggle("active", group.dataset.day === item.day));
+    const rect = container.getBoundingClientRect();
+    const eventX = event.clientX || rect.left + (item.x / width) * rect.width;
+    const eventY = event.clientY || rect.top + pad.top;
+    const left = Math.min(Math.max(eventX - rect.left + 12, 8), rect.width - tooltip.offsetWidth - 8);
+    const top = Math.min(Math.max(eventY - rect.top - 38, 8), rect.height - tooltip.offsetHeight - 8);
+    tooltip.style.left = `${left}px`;
+    tooltip.style.top = `${top}px`;
+  };
+  container.addEventListener("mousemove", (event) => {
+    const svg = container.querySelector("svg");
+    const rect = svg.getBoundingClientRect();
+    const svgX = ((event.clientX - rect.left) / rect.width) * width;
+    const svgY = ((event.clientY - rect.top) / rect.height) * height;
+    const nearest = dayXs.reduce(
+      (best, item) => {
+        const distance = Math.abs(item.x - svgX);
+        return distance < best.distance ? { item, distance } : best;
+      },
+      { item: null, distance: Infinity },
+    );
+    const step = innerWidth / Math.max(1, rows.length - 1);
+    if (!nearest.item || svgX < pad.left - step / 2 || svgX > width - pad.right + step / 2 || svgY < pad.top - 14 || svgY > height - pad.bottom + 22) {
+      hideTooltip();
+      return;
+    }
+    showTooltip(event, nearest.item);
+  });
+  container.addEventListener("mouseleave", hideTooltip);
+  pointGroups.forEach((group) => {
+    group.querySelector(".chart-hit-point").addEventListener("focus", (event) => {
+      const item = dayXs.find((day) => day.day === group.dataset.day);
+      if (item) showTooltip(event, item);
+    });
+    group.querySelector(".chart-hit-point").addEventListener("blur", hideTooltip);
+  });
 }
 
 function renderUsagePage(data) {
@@ -492,11 +559,45 @@ function renderSwearMeter(data) {
         ${metric("Swear index", formatPercent(meter.swearIndexRate), `${formatNumber(meter.swearIndexMessages)} of ${formatNumber(meter.directUserMessages)} user messages`)}
         ${metric("Occurrences", formatCompact(meter.swearIndexOccurrences), `${formatCompact(meter.swearIndexScore)} weighted score`)}
       </div>
-      <div id="swear-meter-chart" class="chart swear-chart" role="img" aria-label="Codex swear index over time"></div>
+      <div id="swear-meter-chart" class="chart swear-chart" role="img" aria-label="Swear index over time"></div>
+      <div id="swear-meter-legend" class="legend-list swear-legend"></div>
       <div class="term-list" aria-label="Top swear-index terms">${termRows}</div>
     `,
   );
   renderSwearMeterChart("#swear-meter-chart", meter.timeline || []);
+  renderSwearMeterLegend(meter);
+}
+
+function renderSwearMeterLegend(meter) {
+  setHtml(
+    "#swear-meter-legend",
+    [
+      { id: "messages", label: "User messages", value: meter.directUserMessages, color: "var(--border-strong)", note: "Daily scanned messages" },
+      { id: "rate", label: "Swear index", value: meter.swearIndexMessages, color: "var(--red-ink)", note: `${formatPercent(meter.swearIndexRate)} overall` },
+    ]
+      .map(
+        (item) => `
+          <label class="legend-item">
+            <input type="checkbox" data-swear-series-id="${escapeHtml(item.id)}" ${swearSeriesVisible.has(item.id) ? "checked" : ""} />
+            <span class="legend-swatch" style="background:${escapeHtml(item.color)}"></span>
+            <span>
+              <strong>${escapeHtml(item.label)}</strong>
+              <small>${escapeHtml(formatCompact(item.value))} ${escapeHtml(item.note)}</small>
+            </span>
+          </label>
+        `,
+      )
+      .join(""),
+  );
+  document.querySelectorAll("[data-swear-series-id]").forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      const id = event.currentTarget.dataset.swearSeriesId;
+      if (event.currentTarget.checked) swearSeriesVisible.add(id);
+      else swearSeriesVisible.delete(id);
+      if (swearSeriesVisible.size === 0) swearSeriesVisible.add("rate");
+      if (snapshot) renderSwearMeter(snapshot);
+    });
+  });
 }
 
 function currentProject(data) {

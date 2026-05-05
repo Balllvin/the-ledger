@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import monitor.codex as codex
 from monitor.codex import collect_sessions, scan_session_file
 from monitor.swear_meter import analyze_user_message, match_message, should_skip_message
 
@@ -13,6 +14,10 @@ class SwearMeterTests(unittest.TestCase):
     def test_match_message_uses_word_boundaries(self) -> None:
         self.assertEqual(match_message("the tissue sample is fine"), [])
         self.assertEqual(match_message("what the hell is this")[0]["term"], "what the hell")
+        terms = {hit["term"] for hit in match_message("holy shit, this is nonsense and not even close")}
+        self.assertIn("holy shit", terms)
+        self.assertIn("this is nonsense", terms)
+        self.assertIn("not even close", terms)
 
     def test_skip_scaffold_and_automations(self) -> None:
         self.assertTrue(should_skip_message("# AGENTS.md instructions\n..."))
@@ -145,6 +150,49 @@ class SwearMeterTests(unittest.TestCase):
         self.assertEqual(summary["timeline"][0]["day"], "2025-01-06")
         self.assertEqual(sessions_summary["swearByThread"]["one"]["swearIndexMessages"], 1)
         self.assertEqual(sessions_summary["swearByThread"]["two"]["swearIndexMessages"], 0)
+
+    def test_collect_sessions_lightweight_scans_skipped_files_for_swear_meter(self) -> None:
+        old_limit = codex.MAX_PARSED_SESSION_FILES
+        old_swear_limit = codex.MAX_SWEAR_SESSION_FILES
+        codex.MAX_PARSED_SESSION_FILES = 1
+        codex.MAX_SWEAR_SESSION_FILES = 10
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                sessions = root / "sessions"
+                sessions.mkdir()
+                recent = sessions / "rollout-recent.jsonl"
+                older = sessions / "rollout-older.jsonl"
+                recent.write_text(
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-07T09:00:00Z",
+                            "type": "event_msg",
+                            "payload": {"type": "user_message", "message": "looks good"},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                older.write_text(
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-06T09:00:00Z",
+                            "type": "event_msg",
+                            "payload": {"type": "user_message", "message": "holy shit"},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                summary = collect_sessions(root)
+
+            self.assertEqual(summary["parsedFiles"], 1)
+            self.assertEqual(summary["skippedFiles"], 1)
+            self.assertEqual(summary["swearMeter"]["directUserMessages"], 2)
+            self.assertEqual(summary["swearMeter"]["swearIndexMessages"], 1)
+        finally:
+            codex.MAX_PARSED_SESSION_FILES = old_limit
+            codex.MAX_SWEAR_SESSION_FILES = old_swear_limit
 
 
 if __name__ == "__main__":

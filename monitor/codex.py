@@ -26,6 +26,8 @@ TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning
 MAX_FULL_SESSION_BYTES = 2_000_000
 SESSION_TAIL_BYTES = 256_000
 MAX_PARSED_SESSION_FILES = 450
+MAX_SWEAR_SESSION_FILES = 550
+MAX_FULL_SWEAR_SESSION_BYTES = MAX_FULL_SESSION_BYTES
 
 
 def _empty_token_totals() -> dict[str, int]:
@@ -112,7 +114,44 @@ def scan_session_file_fast(path: Path, *, archive: str, root: Path | None = None
         for raw in chunk.decode("utf-8", errors="replace").splitlines():
             if raw.strip():
                 _apply_session_line(session, raw)
+    full_swear_meter = scan_session_swear_meter(path, archive=archive, root=root)
+    session["swearMeter"] = _swear_meter_from_finalized(full_swear_meter["swearMeter"])
+    session["id"] = full_swear_meter.get("id") or session["id"]
+    session["cwd"] = full_swear_meter.get("cwd") or session["cwd"]
+    session["source"] = full_swear_meter.get("source") or session["source"]
     return _finalize_session(path, session)
+
+
+def scan_session_swear_meter(path: Path, *, archive: str, root: Path | None = None) -> dict[str, Any]:
+    session = _base_session(path, archive=archive, root=root)
+    if session["bytes"] > MAX_FULL_SWEAR_SESSION_BYTES:
+        session["partial"] = True
+        try:
+            with path.open("rb") as handle:
+                head = handle.read(min(262_144, session["bytes"]))
+                handle.seek(max(0, session["bytes"] - SESSION_TAIL_BYTES))
+                tail = handle.read()
+        except OSError as exc:
+            session["error"] = safe_preview(exc)
+            return _finalize_session(path, session)
+        chunks = [head, tail.split(b"\n", 1)[-1]]
+        for chunk in chunks:
+            for raw_line in chunk.decode("utf-8", errors="replace").splitlines():
+                _apply_swear_candidate_line(session, raw_line)
+    else:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for raw_line in handle:
+                _apply_swear_candidate_line(session, raw_line)
+    session["swearOnly"] = True
+    return _finalize_session(path, session)
+
+
+def _apply_swear_candidate_line(session: dict[str, Any], raw_line: str) -> None:
+    if not raw_line.strip():
+        return
+    if "session_meta" not in raw_line and "user_message" not in raw_line and '"role":"user"' not in raw_line and '"role": "user"' not in raw_line:
+        return
+    _apply_session_line(session, raw_line)
 
 
 def _apply_session_line(session: dict[str, Any], raw_line: str) -> None:
@@ -271,7 +310,11 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
         for index, path in enumerate(paths):
             try:
                 if index >= MAX_PARSED_SESSION_FILES:
-                    session = _finalize_session(path, {**_base_session(path, archive=archive, root=codex_root), "skipped": True})
+                    if index < MAX_SWEAR_SESSION_FILES:
+                        session = scan_session_swear_meter(path, archive=archive, root=codex_root)
+                        session["skipped"] = True
+                    else:
+                        session = _finalize_session(path, {**_base_session(path, archive=archive, root=codex_root), "skipped": True})
                     skipped_files += 1
                 elif path.stat().st_size > MAX_FULL_SESSION_BYTES:
                     session = scan_session_file_fast(path, archive=archive, root=codex_root)
