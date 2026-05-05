@@ -7,6 +7,7 @@ from pathlib import Path
 
 import monitor.codex as codex
 from monitor.codex import collect_sessions, scan_session_file
+from monitor.sanitize import sanitize
 from monitor.swear_meter import analyze_user_message, finalize_swear_meter, match_message, should_skip_message
 
 
@@ -50,6 +51,26 @@ class SwearMeterTests(unittest.TestCase):
 
         self.assertEqual(sum(row["messages"] for row in sets), 1)
         self.assertTrue(any({"ai_coding_failure", "anger_callout"}.issubset(set(row["categories"])) for row in sets))
+
+    def test_sanitized_payload_preserves_category_set_ids(self) -> None:
+        payload = {
+            "sessions": {
+                "swearMeter": {
+                    "timeline": [
+                        {
+                            "categorySets": [
+                                {"categories": ["ai_coding_failure", "anger_callout"], "messages": 1}
+                            ]
+                        }
+                    ]
+                }
+            }
+        }
+
+        sanitized = sanitize(payload, max_depth=10)
+
+        categories = sanitized["sessions"]["swearMeter"]["timeline"][0]["categorySets"][0]["categories"]
+        self.assertEqual(categories, ["ai_coding_failure", "anger_callout"])
 
     def test_scan_session_file_adds_privacy_safe_swear_meter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

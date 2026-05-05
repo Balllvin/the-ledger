@@ -898,5 +898,5 @@ def collect_codex(home: Path | None = None) -> dict[str, Any]:
     result["sessions"] = collect_sessions(codex_root)
     result["appDatabase"] = collect_app_database(codex_root)
     result["desktopApp"] = collect_desktop_app_support(default_home())
-    result = sanitize(result)
+    result = sanitize(result, max_depth=10)
     return result
