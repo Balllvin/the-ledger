@@ -3,8 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from monitor.discovery import discover_local_sources, preferred_codex_root
+from monitor.discovery import discover_local_sources, preferred_codex_root, preferred_lattice_root
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -44,6 +45,30 @@ class DiscoveryTests(unittest.TestCase):
             preferred = preferred_codex_root(discovery, home)
 
         self.assertEqual(preferred.name, ".codex")
+
+    def test_the_ledger_scan_roots_override_default_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            scan_root = Path(tmp) / "scan-root"
+            app = scan_root / "sample-app"
+            app.mkdir(parents=True)
+            (app / "codex_auth.json").write_text("{}", encoding="utf-8")
+
+            with patch.dict("os.environ", {"THE_LEDGER_SCAN_ROOTS": str(scan_root)}, clear=True):
+                discovery = discover_local_sources(home)
+
+        self.assertEqual(discovery["scanRoots"], [str(scan_root.resolve())])
+        self.assertTrue(any(item["path"].endswith("sample-app") for item in discovery["appRoots"]))
+
+    def test_preferred_lattice_root_uses_the_ledger_env_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ledger-app"
+
+            with patch.dict("os.environ", {"THE_LEDGER_LATTICE_ROOT": str(root)}, clear=True):
+                preferred = preferred_lattice_root({}, Path(tmp))
+
+        self.assertEqual(preferred, root)
 
 
 if __name__ == "__main__":

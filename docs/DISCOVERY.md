@@ -1,6 +1,6 @@
 # Discovery
 
-The monitor should discover local AI usage records without requiring the user to know exact paths. Keep discovery bounded, read-only, and transparent.
+The Ledger should discover local AI usage records without requiring the user to know exact paths. Keep discovery bounded, read-only, and transparent.
 
 ## Codex Root Search Order
 
@@ -15,8 +15,8 @@ The monitor should discover local AI usage records without requiring the user to
    - code
    - projects
    - source
-4. Paths listed in `AI_USAGE_MONITOR_SCAN_ROOTS`.
-5. Paths listed in `AI_USAGE_MONITOR_EXTRA_APP_ROOTS`.
+4. Paths listed in `THE_LEDGER_SCAN_ROOTS`.
+5. Paths listed in `THE_LEDGER_EXTRA_APP_ROOTS`.
 
 The app treats auth files as presence-only metadata. It never displays auth values.
 
@@ -36,12 +36,12 @@ The app treats auth files as presence-only metadata. It never displays auth valu
 
 Hermes roots are discovered from:
 
-- `AI_USAGE_MONITOR_HERMES_ROOTS`
+- `THE_LEDGER_HERMES_ROOTS`
 - `~/.hermes`
 - `~/.local/state/hermes`
 - bounded scan roots that contain Hermes state markers such as `state.db`, `auth.json`, `gateway_state.json`, or a `sessions` directory
 
-Hermes auth files are presence-only metadata. The monitor reads Hermes SQLite databases read-only and summarizes tokens, sessions, messages, task status counts, and file metadata.
+Hermes auth files are presence-only metadata. The Ledger reads Hermes SQLite databases read-only and summarizes tokens, sessions, messages, task status counts, and file metadata.
 
 ## OpenCode Search
 
@@ -68,7 +68,7 @@ For each bounded scan root, identify likely app roots by looking for:
 - `data/lattice.db`
 - references to `.codex/auth.json`
 
-By default, discovery uses known metadata names and avoids opening arbitrary project text files. Set `AI_USAGE_MONITOR_DEEP_TEXT_SCAN=1` to also scan small text files for marker strings. Skip:
+By default, discovery uses known metadata names and avoids opening arbitrary project text files. Set `THE_LEDGER_DEEP_TEXT_SCAN=1` to also scan small text files for marker strings. Skip:
 
 - `.git`
 - `node_modules`
@@ -82,11 +82,12 @@ Do not read or report raw private document contents. Signal counts and paths are
 ## Environment Overrides
 
 - `CODEX_HOME`: exact Codex root.
-- `AI_USAGE_MONITOR_SCAN_ROOTS`: complete bounded roots, replacing the default scan roots.
-- `AI_USAGE_MONITOR_EXTRA_APP_ROOTS`: appended roots for extra app discovery.
-- `AI_USAGE_MONITOR_LATTICE_ROOT`: exact app root containing `data/lattice.db`.
-- `AI_USAGE_MONITOR_HERMES_ROOTS`: exact Hermes root paths to include.
-- `AI_USAGE_MONITOR_DEEP_TEXT_SCAN`: set to `1` to scan small text files for Codex marker strings.
+- `THE_LEDGER_SCAN_ROOTS`: complete bounded roots, replacing the default scan roots.
+- `THE_LEDGER_EXTRA_APP_ROOTS`: appended roots for extra app discovery.
+- `THE_LEDGER_LATTICE_ROOT`: exact app root containing `data/lattice.db`.
+- `THE_LEDGER_HERMES_ROOTS`: exact Hermes root paths to include.
+- `THE_LEDGER_DEEP_TEXT_SCAN`: set to `1` to scan small text files for Codex marker strings.
+
 
 ## Agent Checklist
 

@@ -1,6 +1,6 @@
 # Design
 
-The dashboard should feel like a local ledger, not a product landing page.
+The Ledger should feel like a local ledger, not a product landing page.
 
 ## Structure
 

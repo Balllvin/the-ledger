@@ -20,7 +20,7 @@ CACHE_SECONDS = 20
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "AIUsageMonitor/1.0"
+    server_version = "TheLedger/1.0"
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -109,12 +109,12 @@ def encode_sse(event: str, payload: object) -> bytes:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the local AI usage monitor.")
+    parser = argparse.ArgumentParser(description="Run The Ledger local usage dashboard.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5177)
     args = parser.parse_args()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"AI Usage Monitor running at http://{args.host}:{args.port}")
+    print(f"The Ledger running at http://{args.host}:{args.port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

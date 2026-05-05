@@ -322,7 +322,7 @@ def collect_hermes_session_files(root: Path) -> dict[str, Any]:
 
 
 def _local_hermes_roots(home: Path) -> list[Path]:
-    candidates = _env_paths("AI_USAGE_MONITOR_HERMES_ROOTS")
+    candidates = _env_paths("THE_LEDGER_HERMES_ROOTS")
     candidates.extend(
         [
             home / ".hermes",
@@ -370,7 +370,7 @@ def _find_hermes_state_roots(root: Path, *, max_depth: int, limit: int) -> list[
 
 def _bounded_roots(home: Path) -> list[Path]:
     roots = [home / "Desktop", home / "Documents", home / "Developer", home / "dev", home / "code", home / "projects"]
-    roots.extend(_env_paths("AI_USAGE_MONITOR_EXTRA_APP_ROOTS"))
+    roots.extend(_env_paths("THE_LEDGER_EXTRA_APP_ROOTS"))
     return [_safe_resolve(path) for path in roots if _safe_resolve(path).exists()]
 
 

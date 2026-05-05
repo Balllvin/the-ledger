@@ -1,4 +1,4 @@
-"""Local AI usage monitor collectors."""
+"""The Ledger local usage collectors."""
 
 from .snapshot import collect_snapshot
 

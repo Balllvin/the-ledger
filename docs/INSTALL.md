@@ -11,8 +11,8 @@ The app is a standard-library Python web server. It does not require npm, a data
 ## Windows
 
 ```powershell
-git clone https://github.com/<owner>/ai-usage-monitor.git
-cd ai-usage-monitor
+git clone https://github.com/<owner>/the-ledger.git
+cd the-ledger
 python -m unittest discover -s tests
 python server.py --host 127.0.0.1 --port 5177
 ```
@@ -29,7 +29,7 @@ python server.py --host 127.0.0.1 --port 5177
 Optional bounded discovery roots:
 
 ```powershell
-$env:AI_USAGE_MONITOR_SCAN_ROOTS="$env:USERPROFILE\Desktop;$env:USERPROFILE\Documents"
+$env:THE_LEDGER_SCAN_ROOTS="$env:USERPROFILE\Desktop;$env:USERPROFILE\Documents"
 python server.py --host 127.0.0.1 --port 5177
 ```
 
@@ -38,14 +38,14 @@ python server.py --host 127.0.0.1 --port 5177
 Double-click from Finder:
 
 ```text
-bin/ai-usage-monitor.command
+bin/the-ledger.command
 ```
 
 Or run from Terminal:
 
 ```bash
-git clone https://github.com/<owner>/ai-usage-monitor.git
-cd ai-usage-monitor
+git clone https://github.com/<owner>/the-ledger.git
+cd the-ledger
 python3 -m unittest discover -s tests
 python3 server.py --host 127.0.0.1 --port 5177
 ```
@@ -59,14 +59,14 @@ CODEX_HOME="$HOME/.codex" python3 server.py --host 127.0.0.1 --port 5177
 Optional bounded discovery roots:
 
 ```bash
-AI_USAGE_MONITOR_SCAN_ROOTS="$HOME/Projects:$HOME/Documents" python3 server.py --host 127.0.0.1 --port 5177
+THE_LEDGER_SCAN_ROOTS="$HOME/Projects:$HOME/Documents" python3 server.py --host 127.0.0.1 --port 5177
 ```
 
 ## Linux
 
 ```bash
-git clone https://github.com/<owner>/ai-usage-monitor.git
-cd ai-usage-monitor
+git clone https://github.com/<owner>/the-ledger.git
+cd the-ledger
 python3 -m unittest discover -s tests
 python3 server.py --host 127.0.0.1 --port 5177
 ```

@@ -47,7 +47,7 @@ def preferred_codex_root(discovery: dict[str, Any], home: Path | None = None) ->
 
 
 def preferred_lattice_root(discovery: dict[str, Any], home: Path | None = None) -> Path:
-    env_root = os.environ.get("AI_USAGE_MONITOR_LATTICE_ROOT")
+    env_root = os.environ.get("THE_LEDGER_LATTICE_ROOT")
     if env_root:
         return Path(env_root).expanduser()
     for item in discovery.get("appRoots") or []:
@@ -57,12 +57,12 @@ def preferred_lattice_root(discovery: dict[str, Any], home: Path | None = None) 
 
 
 def _scan_roots(home: Path) -> list[Path]:
-    env_roots = _env_paths("AI_USAGE_MONITOR_SCAN_ROOTS")
+    env_roots = _env_paths("THE_LEDGER_SCAN_ROOTS")
     if env_roots:
         return _existing_unique(env_roots)
     names = ("Desktop", "Documents", "Downloads", "Developer", "dev", "code", "projects", "source")
     candidates = [home / name for name in names]
-    candidates.extend(_env_paths("AI_USAGE_MONITOR_EXTRA_APP_ROOTS"))
+    candidates.extend(_env_paths("THE_LEDGER_EXTRA_APP_ROOTS"))
     return _existing_unique(candidates)
 
 
@@ -122,7 +122,7 @@ def _discover_hermes_roots(home: Path, scan_roots: Iterable[Path]) -> list[dict[
         home / ".local" / "state" / "hermes",
         home / "Desktop" / "brain spa" / "brain-spa" / "runtime" / "hermes" / "chipmunk",
         home / "Desktop" / "brain-spa" / "runtime" / "hermes" / "chipmunk",
-        *_env_paths("AI_USAGE_MONITOR_HERMES_ROOTS"),
+        *_env_paths("THE_LEDGER_HERMES_ROOTS"),
     ]
     for root in scan_roots:
         if _safe_resolve(root) == _safe_resolve(home):
@@ -216,7 +216,7 @@ def _file_marker(path: Path) -> str | None:
         return "lattice.db"
     if path.suffix.lower() not in TEXT_EXTENSIONS:
         return None
-    if os.environ.get("AI_USAGE_MONITOR_DEEP_TEXT_SCAN") != "1":
+    if os.environ.get("THE_LEDGER_DEEP_TEXT_SCAN") != "1":
         return None
     try:
         if path.stat().st_size > 262_144:
