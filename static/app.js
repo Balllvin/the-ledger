@@ -43,6 +43,10 @@ function formatBytes(value) {
   return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[index]}`;
 }
 
+function formatPercent(value) {
+  return `${Number(value || 0).toFixed(Number(value || 0) >= 10 ? 1 : 2)}%`;
+}
+
 function formatDate(value) {
   if (!value) return "";
   const date = new Date(value);
@@ -359,6 +363,7 @@ function renderUsagePage(data) {
       metric("Logs", formatCompact(overview.logs), `${formatNumber(overview.failures)} command failures`),
     ].join(""),
   );
+  renderSwearMeter(data);
   const meta = data.meta || {};
   document.querySelector("#generated-at").textContent = `Generated ${formatDate(meta.generatedAt)} in ${meta.scanSeconds ?? "?"}s`;
 
@@ -393,6 +398,39 @@ function renderUsagePage(data) {
       renderUsagePage(snapshot);
     });
   });
+}
+
+function renderSwearMeter(data) {
+  const meter = (((data.codex || {}).sessions || {}).swearMeter || {});
+  const terms = meter.terms || [];
+  const visible = hasSystem("codex") && Number(meter.directUserMessages || 0) > 0;
+  if (!visible) {
+    setHtml("#swear-meter-summary", emptyHtml("No Codex user messages found."));
+    return;
+  }
+  const termRows = terms.length
+    ? terms
+        .slice(0, 8)
+        .map(
+          (row) => `
+            <div class="term-chip" title="${escapeHtml(row.occurrences)} occurrences">
+              <span>${escapeHtml(row.term)}</span>
+              <strong>${escapeHtml(formatNumber(row.messages))}</strong>
+            </div>
+          `,
+        )
+        .join("")
+    : `<p class="empty">No counted swear-index terms.</p>`;
+  setHtml(
+    "#swear-meter-summary",
+    `
+      <div class="mini-metrics">
+        ${metric("Swear index", formatPercent(meter.swearIndexRate), `${formatNumber(meter.swearIndexMessages)} of ${formatNumber(meter.directUserMessages)} user messages`)}
+        ${metric("Occurrences", formatCompact(meter.swearIndexOccurrences), `${formatCompact(meter.swearIndexScore)} weighted score`)}
+      </div>
+      <div class="term-list" aria-label="Top swear-index terms">${termRows}</div>
+    `,
+  );
 }
 
 function currentProject(data) {

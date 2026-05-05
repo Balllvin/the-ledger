@@ -9,6 +9,7 @@ The app runs on the user's laptop, scans local records at runtime, and does not 
 - Codex roots such as `~/.codex` or `CODEX_HOME`
 - Codex SQLite state and log databases when present
 - Codex JSONL sessions and archived sessions
+- Codex Swear Meter counts from direct user messages, returned as aggregate rates and term counters only
 - Codex desktop app metadata and local automation database when present
 - OpenCode CLI, app, SQLite session database, logs, prompt history, and auth presence when present
 - Codex-linked local app folders discovered from bounded user-home scans

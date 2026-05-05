@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter, defaultdict
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
 from .sanitize import safe_preview, sanitize
+from .swear_meter import analyze_user_message, empty_swear_meter, finalize_swear_meter, merge_swear_meter
 from .utils import (
     count_files,
     default_home,
@@ -74,6 +76,8 @@ def _base_session(path: Path, *, archive: str, root: Path | None = None) -> dict
         "agentRole": None,
         "agentNickname": None,
         "recentFailures": [],
+        "swearMeter": empty_swear_meter(),
+        "_swearMessageIds": set(),
     }
 
 
@@ -181,6 +185,7 @@ def _apply_session_line(session: dict[str, Any], raw_line: str) -> None:
         session["images"] += 1
     if payload_type == "user_message":
         session["userMessages"] += 1
+        _apply_user_message_for_swear_meter(session, payload.get("message"), timestamp)
     if payload_type in {"agent_message", "message"} or payload.get("role") == "assistant":
         session["assistantMessages"] += 1
 
@@ -190,13 +195,42 @@ def _apply_session_line(session: dict[str, Any], raw_line: str) -> None:
             session["tools"][str(name)] += 1
         if payload.get("role") == "user":
             session["userMessages"] += 1
+            _apply_user_message_for_swear_meter(session, _content_to_text(payload.get("content")), timestamp)
         if payload.get("role") == "assistant":
             session["assistantMessages"] += 1
+
+
+def _apply_user_message_for_swear_meter(session: dict[str, Any], message: Any, timestamp: Any) -> None:
+    if not isinstance(message, str):
+        return
+    clean = message.strip()
+    if not clean:
+        return
+    message_id = sha256(f"{timestamp or ''}\0{clean}".encode("utf-8", errors="replace")).hexdigest()
+    seen = session.setdefault("_swearMessageIds", set())
+    if message_id in seen:
+        return
+    seen.add(message_id)
+    merge_swear_meter(session["swearMeter"], analyze_user_message(clean, str(timestamp or "")))
+
+
+def _content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content:
+        if isinstance(item, dict) and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+    return "\n".join(parts)
 
 
 def _finalize_session(path: Path, session: dict[str, Any]) -> dict[str, Any]:
     for counter_key in ("eventCounts", "payloadTypes", "tools", "models", "contextWindows"):
         session[counter_key] = dict(session[counter_key].most_common(25))
+    session["swearMeter"] = finalize_swear_meter(session["swearMeter"])
+    session.pop("_swearMessageIds", None)
     session["id"] = session["id"] or _id_from_rollout_name(path.name)
     return session
 
@@ -227,6 +261,7 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
     bytes_total = 0
     parsed_files = 0
     skipped_files = 0
+    swear_meter = empty_swear_meter()
 
     for archive, root in roots:
         if not root.exists():
@@ -265,6 +300,7 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
                 payload_types[name] += int(count)
             for name, count in (session.get("eventCounts") or {}).items():
                 event_types[name] += int(count)
+            merge_swear_meter(swear_meter, _swear_meter_from_finalized(session.get("swearMeter") or {}))
             failed_commands += int(session.get("commandFailures") or 0)
             command_count += int(session.get("commands") or 0)
             day = str(session.get("firstTimestamp") or session.get("modified") or "")[:10]
@@ -286,10 +322,33 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
         "eventTypes": dict(event_types.most_common(20)),
         "parsedFiles": parsed_files,
         "skippedFiles": skipped_files,
+        "swearMeter": finalize_swear_meter(swear_meter),
         "timeline": [{"day": day, **values} for day, values in sorted(by_day.items())],
         "recent": _compact_sessions(all_sessions[:80]),
         "topByTokens": _compact_sessions(sorted(all_sessions, key=lambda item: int((item.get("latestTokenUsage") or {}).get("total_tokens") or 0), reverse=True)[:25]),
     }
+
+
+def _swear_meter_from_finalized(summary: dict[str, Any]) -> dict[str, Any]:
+    meter = empty_swear_meter()
+    meter["directUserMessages"] = int(summary.get("directUserMessages") or 0)
+    meter["swearIndexMessages"] = int(summary.get("swearIndexMessages") or 0)
+    meter["swearIndexOccurrences"] = int(summary.get("swearIndexOccurrences") or 0)
+    meter["swearIndexScore"] = int(summary.get("swearIndexScore") or 0)
+    meter["groups"].update(summary.get("groups") or {})
+    for row in summary.get("terms") or []:
+        term = row.get("term")
+        if not term:
+            continue
+        meter["terms"][str(term)] += int(row.get("messages") or 0)
+        meter["termOccurrences"][str(term)] += int(row.get("occurrences") or 0)
+    for row in summary.get("timeline") or []:
+        day = row.get("day")
+        if not day:
+            continue
+        meter["timeline"][(str(day), "messages")] += int(row.get("messages") or 0)
+        meter["timeline"][(str(day), "swearMessages")] += int(row.get("swearMessages") or 0)
+    return meter
 
 
 def _compact_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -315,6 +374,7 @@ def _compact_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "tokens": item.get("latestTokenUsage"),
                 "commands": item.get("commands"),
                 "commandFailures": item.get("commandFailures"),
+                "swearMeter": item.get("swearMeter"),
                 "tools": item.get("tools"),
                 "models": item.get("models"),
             }
