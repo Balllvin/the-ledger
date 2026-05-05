@@ -352,6 +352,70 @@ function renderLineChart(selector, series, days) {
   });
 }
 
+function renderSwearMeterChart(selector, timeline) {
+  const container = document.querySelector(selector);
+  const rows = [...(timeline || [])].filter((row) => row.day).sort((a, b) => String(a.day).localeCompare(String(b.day)));
+  if (!rows.length) {
+    container.innerHTML = emptyHtml();
+    return;
+  }
+  const width = 960;
+  const height = 210;
+  const pad = { left: 46, right: 18, top: 18, bottom: 32 };
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+  const maxMessages = Math.max(1, ...rows.map((row) => Number(row.messages || 0)));
+  const rates = rows.map((row) => (Number(row.messages || 0) ? (Number(row.swearMessages || 0) / Number(row.messages || 0)) * 100 : 0));
+  const maxRate = Math.max(1, ...rates);
+  const barStep = innerWidth / Math.max(1, rows.length);
+  const barWidth = Math.max(3, Math.min(22, barStep * 0.62));
+  const x = (index) => pad.left + index * barStep + barStep / 2;
+  const yMessages = (value) => pad.top + (1 - Number(value || 0) / maxMessages) * innerHeight;
+  const yRate = (value) => pad.top + (1 - Number(value || 0) / maxRate) * innerHeight;
+  const grid = [0, 0.5, 1]
+    .map((ratio) => {
+      const yy = pad.top + ratio * innerHeight;
+      return `<line x1="${pad.left}" y1="${yy}" x2="${width - pad.right}" y2="${yy}" class="chart-grid" />`;
+    })
+    .join("");
+  const bars = rows
+    .map((row, index) => {
+      const messages = Number(row.messages || 0);
+      const xx = x(index) - barWidth / 2;
+      const yy = yMessages(messages);
+      const barHeight = Math.max(0, height - pad.bottom - yy);
+      return `<rect class="swear-chart-bar" x="${xx.toFixed(1)}" y="${yy.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}"><title>${escapeHtml(row.day)}: ${escapeHtml(formatNumber(messages))} user messages</title></rect>`;
+    })
+    .join("");
+  const linePoints = rows.map((row, index) => `${x(index).toFixed(1)},${yRate(rates[index]).toFixed(1)}`).join(" ");
+  const points = rows
+    .map(
+      (row, index) =>
+        `<circle class="swear-chart-point" cx="${x(index).toFixed(1)}" cy="${yRate(rates[index]).toFixed(1)}" r="3"><title>${escapeHtml(row.day)}: ${escapeHtml(formatPercent(rates[index]))} swear index, ${escapeHtml(formatNumber(row.swearMessages))} counted messages</title></circle>`,
+    )
+    .join("");
+  const ticks = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ index }) => index === 0 || index === rows.length - 1 || index % Math.ceil(rows.length / 4) === 0)
+    .map(({ row, index }) => `<text x="${x(index)}" y="${height - 8}" class="chart-label" text-anchor="middle">${escapeHtml(String(row.day).slice(5))}</text>`)
+    .join("");
+  container.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" aria-hidden="true">
+      ${grid}
+      <text x="8" y="${pad.top + 4}" class="chart-label">${escapeHtml(formatPercent(maxRate))}</text>
+      <text x="8" y="${height - pad.bottom + 4}" class="chart-label">0%</text>
+      ${bars}
+      <polyline class="chart-line swear-chart-line" points="${linePoints}" />
+      ${points}
+      ${ticks}
+    </svg>
+    <div class="swear-chart-key">
+      <span><i class="bar"></i>User messages</span>
+      <span><i class="line"></i>Swear index</span>
+    </div>
+  `;
+}
+
 function renderUsagePage(data) {
   const overview = selectedOverview(data);
   setHtml(
@@ -428,9 +492,11 @@ function renderSwearMeter(data) {
         ${metric("Swear index", formatPercent(meter.swearIndexRate), `${formatNumber(meter.swearIndexMessages)} of ${formatNumber(meter.directUserMessages)} user messages`)}
         ${metric("Occurrences", formatCompact(meter.swearIndexOccurrences), `${formatCompact(meter.swearIndexScore)} weighted score`)}
       </div>
+      <div id="swear-meter-chart" class="chart swear-chart" role="img" aria-label="Codex swear index over time"></div>
       <div class="term-list" aria-label="Top swear-index terms">${termRows}</div>
     `,
   );
+  renderSwearMeterChart("#swear-meter-chart", meter.timeline || []);
 }
 
 function currentProject(data) {
@@ -483,11 +549,22 @@ function renderProjectPage(data) {
         { label: "Updated", value: (row) => row.updated, format: formatDate },
         { label: "Title", value: (row) => row.title || "[untitled]" },
         { label: "Source", value: (row) => row.source || "" },
+        {
+          label: "Swears",
+          value: (row) => threadSwearMeter(data, row).swearIndexMessages || 0,
+          format: (value) => formatNumber(value),
+          num: true,
+        },
         { label: "Tokens", value: (row) => row.tokens, format: formatCompact, num: true },
       ],
       project.recentThreads || [],
     ),
   );
+}
+
+function threadSwearMeter(data, thread) {
+  if (!thread?.id) return {};
+  return ((((data.codex || {}).sessions || {}).swearByThread || {})[thread.id]) || {};
 }
 
 function renderSourceHealth(data) {

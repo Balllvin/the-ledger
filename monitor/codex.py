@@ -262,6 +262,7 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
     parsed_files = 0
     skipped_files = 0
     swear_meter = empty_swear_meter()
+    swear_by_thread: dict[str, dict[str, Any]] = {}
 
     for archive, root in roots:
         if not root.exists():
@@ -300,7 +301,12 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
                 payload_types[name] += int(count)
             for name, count in (session.get("eventCounts") or {}).items():
                 event_types[name] += int(count)
-            merge_swear_meter(swear_meter, _swear_meter_from_finalized(session.get("swearMeter") or {}))
+            session_swear_meter = _swear_meter_from_finalized(session.get("swearMeter") or {})
+            merge_swear_meter(swear_meter, session_swear_meter)
+            session_id = session.get("id")
+            if session_id:
+                thread_meter = swear_by_thread.setdefault(str(session_id), empty_swear_meter())
+                merge_swear_meter(thread_meter, session_swear_meter)
             failed_commands += int(session.get("commandFailures") or 0)
             command_count += int(session.get("commands") or 0)
             day = str(session.get("firstTimestamp") or session.get("modified") or "")[:10]
@@ -323,6 +329,7 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
         "parsedFiles": parsed_files,
         "skippedFiles": skipped_files,
         "swearMeter": finalize_swear_meter(swear_meter),
+        "swearByThread": {thread_id: finalize_swear_meter(meter) for thread_id, meter in swear_by_thread.items()},
         "timeline": [{"day": day, **values} for day, values in sorted(by_day.items())],
         "recent": _compact_sessions(all_sessions[:80]),
         "topByTokens": _compact_sessions(sorted(all_sessions, key=lambda item: int((item.get("latestTokenUsage") or {}).get("total_tokens") or 0), reverse=True)[:25]),

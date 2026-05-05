@@ -98,6 +98,11 @@ class SwearMeterTests(unittest.TestCase):
                     json.dumps(row)
                     for row in [
                         {
+                            "timestamp": "2025-01-06T08:59:00Z",
+                            "type": "session_meta",
+                            "payload": {"id": "one", "cwd": "/work/example", "source": "cli"},
+                        },
+                        {
                             "timestamp": "2025-01-06T09:00:00Z",
                             "type": "event_msg",
                             "payload": {"type": "user_message", "message": "this is awful"},
@@ -112,23 +117,34 @@ class SwearMeterTests(unittest.TestCase):
                 encoding="utf-8",
             )
             second.write_text(
-                json.dumps(
-                    {
-                        "timestamp": "2025-01-07T09:00:00Z",
-                        "type": "event_msg",
-                        "payload": {"type": "user_message", "message": "looks good"},
-                    }
+                "\n".join(
+                    json.dumps(row)
+                    for row in [
+                        {
+                            "timestamp": "2025-01-07T08:59:00Z",
+                            "type": "session_meta",
+                            "payload": {"id": "two", "cwd": "/work/example", "source": "cli"},
+                        },
+                        {
+                            "timestamp": "2025-01-07T09:00:00Z",
+                            "type": "event_msg",
+                            "payload": {"type": "user_message", "message": "looks good"},
+                        },
+                    ]
                 ),
                 encoding="utf-8",
             )
 
-            summary = collect_sessions(root)["swearMeter"]
+            sessions_summary = collect_sessions(root)
+            summary = sessions_summary["swearMeter"]
 
         self.assertEqual(summary["directUserMessages"], 3)
         self.assertEqual(summary["swearIndexMessages"], 1)
         self.assertEqual(summary["swearIndexRate"], 33.33)
         self.assertEqual(summary["terms"][0]["term"], "this is awful")
         self.assertEqual(summary["timeline"][0]["day"], "2025-01-06")
+        self.assertEqual(sessions_summary["swearByThread"]["one"]["swearIndexMessages"], 1)
+        self.assertEqual(sessions_summary["swearByThread"]["two"]["swearIndexMessages"], 0)
 
 
 if __name__ == "__main__":

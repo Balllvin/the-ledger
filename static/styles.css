@@ -622,7 +622,59 @@ select {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.swear-chart {
+  min-width: 0;
+}
+
+.swear-chart-bar {
+  fill: var(--border);
+}
+
+.swear-chart-line {
+  stroke: var(--red-ink);
+}
+
+.swear-chart-point {
+  fill: var(--red-ink);
+  stroke: var(--surface);
+  stroke-width: 1.5;
+}
+
+.swear-chart-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.swear-chart-key span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swear-chart-key i {
+  display: inline-block;
+  width: 12px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.swear-chart-key .bar {
+  background: var(--border);
+}
+
+.swear-chart-key .line {
+  height: 3px;
+  background: var(--red-ink);
+}
+
 .term-list {
+  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -684,7 +736,7 @@ select {
 
 table {
   width: 100%;
-  min-width: 560px;
+  min-width: 680px;
   border-collapse: collapse;
 }
 

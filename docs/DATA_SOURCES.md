@@ -29,7 +29,7 @@ Collected records:
 - `sessions/**/*.jsonl`
   - session metadata, turn context, model mentions, token count events, tool calls, command exits, image/search events
   - token totals use the latest cumulative `total_token_usage` per session file
-  - direct user messages are inspected locally for the Codex Swear Meter; the browser receives only aggregate message counts, rates, term counters, group counters, and daily buckets, never raw messages or snippets
+  - direct user messages are inspected locally for the Codex Swear Meter; the browser receives only aggregate message counts, rates, term counters, group counters, daily buckets, and per-thread counts, never raw messages or snippets
   - very large session files are summarized from the file head and tail so the dashboard stays responsive; those rows are marked partial
   - when thousands of historical session files exist, recent files are parsed and older files remain counted as file metadata; those rows are marked skipped
 - `archived_sessions/**/*.jsonl`
