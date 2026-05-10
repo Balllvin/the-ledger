@@ -382,7 +382,13 @@ def collect_hermes_state(db: Path) -> dict[str, Any]:
             ]
             result["byDay"] = query_rows(
                 con,
-                "select substr(coalesce(ended_at, started_at, ''), 1, 10) day, "
+                "select "
+                "case "
+                "when typeof(coalesce(ended_at, started_at, '')) in ('integer','real') "
+                "or coalesce(ended_at, started_at, '') glob '[0-9]*' "
+                "then date(datetime(coalesce(ended_at, started_at), 'unixepoch')) "
+                "else substr(coalesce(ended_at, started_at, ''), 1, 10) "
+                "end as day, "
                 "count(*) sessions, "
                 "coalesce(sum(input_tokens + output_tokens + reasoning_tokens),0) tokens "
                 "from sessions group by day having day != '' order by day asc",
@@ -421,7 +427,8 @@ def _collect_hermes_swear_meter(con: sqlite3.Connection) -> dict[str, Any]:
 
     for row in rows:
         content = str(row.get("content") or "")
-        timestamp = str(row.get("message_ts") or row.get("session_started") or "")
+        raw_ts = row.get("message_ts") or row.get("session_started")
+        timestamp = timestamp_to_iso(raw_ts) or str(raw_ts or "")
         item = analyze_user_message(content, timestamp)
         summary["directUserMessages"] += int(item.get("directUserMessages") or 0)
         summary["swearIndexMessages"] += int(item.get("swearIndexMessages") or 0)
