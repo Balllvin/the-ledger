@@ -56,6 +56,9 @@ def _overview(snapshot: dict[str, Any]) -> dict[str, Any]:
     lattice_db = lattice.get("databaseStats") or {}
     lattice_core = lattice_db.get("core") or {}
     hermes = snapshot.get("hermes") or {}
+    hermes_state = (hermes.get("local") or {}).get("state") or hermes.get("state") or {}
+    hermes_sessions = hermes_state.get("sessions") or {}
+    hermes_swear = hermes_state.get("swearMeter") or {}
     opencode = snapshot.get("opencode") or {}
     opencode_db = opencode.get("database") or {}
     opencode_messages = opencode_db.get("messages") or {}
@@ -99,5 +102,13 @@ def _overview(snapshot: dict[str, Any]) -> dict[str, Any]:
         "latticeFieldReviewRows": codex_field_review,
         "latticeReviewSuggestions": int(lattice_core.get("reviewSuggestions") or 0),
         "hermesFiles": int((hermes.get("local") or {}).get("files") or hermes.get("files") or 0),
+        "hermesSessions": int(hermes_sessions.get("total") or 0),
+        "hermesTokens": int(
+            (hermes_sessions.get("inputTokens") or 0)
+            + (hermes_sessions.get("outputTokens") or 0)
+            + (hermes_sessions.get("reasoningTokens") or 0)
+        ),
+        "hermesSwearIndexMessages": int(hermes_swear.get("swearIndexMessages") or 0),
+        "hermesSwearIndexRate": float(hermes_swear.get("swearIndexRate") or 0),
         "hermesAvailable": bool(hermes.get("available")),
     }

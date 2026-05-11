@@ -220,10 +220,21 @@ function selectedOverview(data) {
         costUsd: overview.opencodeCostUsd || 0,
       }
     : {};
+  const hermes = hasSystem("hermes")
+    ? {
+        tokens: overview.hermesTokens || 0,
+        runs: overview.hermesSessions || 0,
+        projects: 0,
+        logs: 0,
+        failures: 0,
+        automations: 0,
+        automationRuns: 0,
+      }
+    : {};
   return {
-    tokens: Number(codex.tokens || 0) + Number(opencode.tokens || 0),
-    runs: Number(codex.runs || 0) + Number(opencode.runs || 0),
-    projects: Number(codex.projects || 0) + Number(opencode.projects || 0),
+    tokens: Number(codex.tokens || 0) + Number(opencode.tokens || 0) + Number(hermes.tokens || 0),
+    runs: Number(codex.runs || 0) + Number(opencode.runs || 0) + Number(hermes.runs || 0),
+    projects: Number(codex.projects || 0) + Number(opencode.projects || 0) + Number(hermes.projects || 0),
     logs: Number(codex.logs || 0) + Number(opencode.logs || 0),
     failures: Number(codex.failures || 0),
     automations: Number(codex.automations || 0),
@@ -250,6 +261,10 @@ function mergedTotalDays(data) {
   const totals = [];
   if (hasSystem("codex")) totals.push(...((((data.codex || {}).state || {}).projects || {}).total || []));
   if (hasSystem("opencode")) totals.push(...(((((data.opencode || {}).database || {}).projects || {}).total) || []));
+  if (hasSystem("hermes")) {
+    const byDay = ((((data.hermes || {}).local || {}).state || {}).byDay || []);
+    totals.push(...byDay.map((row) => ({ day: row.day, tokens: row.tokens, threads: row.sessions })));
+  }
   const byDay = new Map();
   for (const point of totals) {
     const current = byDay.get(point.day) || { day: point.day, tokens: 0, threads: 0 };
@@ -594,11 +609,53 @@ function renderUsagePage(data) {
   });
 }
 
+function combinedSwearMeter(data) {
+  const codexMeter = (((data.codex || {}).sessions || {}).swearMeter || {});
+  const hermesMeter = (((((data.hermes || {}).local || {}).state || {}).swearMeter) || {});
+  if (!hasSystem("hermes")) return codexMeter;
+  if (!hasSystem("codex")) return hermesMeter;
+  const categories = new Map();
+  for (const category of [...(codexMeter.categories || []), ...(hermesMeter.categories || [])]) {
+    const id = category.id;
+    const existing = categories.get(id) || { ...category, messages: 0, occurrences: 0, score: 0 };
+    existing.messages += Number(category.messages || 0);
+    existing.occurrences += Number(category.occurrences || 0);
+    existing.score += Number(category.score || 0);
+    categories.set(id, existing);
+  }
+  const timelineByDay = new Map();
+  for (const point of [...(codexMeter.timeline || []), ...(hermesMeter.timeline || [])]) {
+    const day = point.day;
+    const existing = timelineByDay.get(day) || { day, messages: 0, swearMessages: 0, categories: {}, categorySets: [] };
+    existing.messages += Number(point.messages || 0);
+    existing.swearMessages += Number(point.swearMessages || 0);
+    for (const [key, value] of Object.entries(point.categories || {})) {
+      const slot = existing.categories[key] || { messages: 0, occurrences: 0 };
+      slot.messages += Number(value.messages || 0);
+      slot.occurrences += Number(value.occurrences || 0);
+      existing.categories[key] = slot;
+    }
+    timelineByDay.set(day, existing);
+  }
+  const directUserMessages = Number(codexMeter.directUserMessages || 0) + Number(hermesMeter.directUserMessages || 0);
+  const swearIndexMessages = Number(codexMeter.swearIndexMessages || 0) + Number(hermesMeter.swearIndexMessages || 0);
+  return {
+    ...codexMeter,
+    directUserMessages,
+    swearIndexMessages,
+    swearIndexOccurrences: Number(codexMeter.swearIndexOccurrences || 0) + Number(hermesMeter.swearIndexOccurrences || 0),
+    swearIndexScore: Number(codexMeter.swearIndexScore || 0) + Number(hermesMeter.swearIndexScore || 0),
+    swearIndexRate: directUserMessages ? (swearIndexMessages / directUserMessages) * 100 : 0,
+    categories: [...categories.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)),
+    timeline: [...timelineByDay.values()].sort((a, b) => String(a.day).localeCompare(String(b.day))),
+  };
+}
+
 function renderSwearMeter(data) {
-  const meter = (((data.codex || {}).sessions || {}).swearMeter || {});
-  const visible = hasSystem("codex") && Number(meter.directUserMessages || 0) > 0;
+  const meter = combinedSwearMeter(data);
+  const visible = Number(meter.directUserMessages || 0) > 0;
   if (!visible) {
-    setHtml("#swear-meter-summary", emptyHtml("No Codex user messages found."));
+    setHtml("#swear-meter-summary", emptyHtml("No user messages found."));
     return;
   }
   if (!swearLegendInitialized) {

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .sanitize import sanitize, safe_preview
+from .swear_meter import analyze_user_message, empty_swear_meter, finalize_swear_meter
 from .utils import (
     count_files,
     default_home,
@@ -165,22 +166,27 @@ def collect_local_hermes(home: Path) -> dict[str, Any]:
     roots = _local_hermes_roots(home)
     if not roots:
         return {"available": False, "kind": "local", "roots": []}
+
+    root_entries = [_collect_local_hermes_root(root, home) for root in roots]
     primary = roots[0]
+    primary_entry = root_entries[0]
+
     result: dict[str, Any] = {
-        "available": primary.exists(),
+        "available": any(bool(entry.get("available")) for entry in root_entries),
         "kind": "local",
         "root": file_info(primary),
         "roots": [path_for_display(path) for path in roots],
+        "rootsData": root_entries,
         "auth": {**file_info(primary / "auth.json"), "redacted": True},
         "authLock": file_info(primary / "auth.lock"),
         "codexAuth": {**file_info(home / ".codex" / "auth.json"), "redacted": True},
-        "config": _safe_structured_keys(primary / "config.yaml"),
-        "channelDirectory": _safe_structured_keys(primary / "channel_directory.json"),
-        "gatewayState": _safe_structured_keys(primary / "gateway_state.json"),
-        "processes": _safe_structured_keys(primary / "processes.json"),
-        "state": collect_hermes_state(primary / "state.db"),
-        "kanban": collect_hermes_kanban(primary / "kanban.db"),
-        "sessions": collect_hermes_session_files(primary / "sessions"),
+        "config": primary_entry.get("config") or _safe_structured_keys(primary / "config.yaml"),
+        "channelDirectory": primary_entry.get("channelDirectory") or _safe_structured_keys(primary / "channel_directory.json"),
+        "gatewayState": primary_entry.get("gatewayState") or _safe_structured_keys(primary / "gateway_state.json"),
+        "processes": primary_entry.get("processes") or _safe_structured_keys(primary / "processes.json"),
+        "state": _aggregate_hermes_state([entry.get("state") for entry in root_entries]),
+        "kanban": _aggregate_kanban_state([entry.get("kanban") for entry in root_entries]),
+        "sessions": _aggregate_session_files([entry.get("sessions") for entry in root_entries]),
         "files": 0,
         "bytes": 0,
         "bySuffix": {},
@@ -189,6 +195,7 @@ def collect_local_hermes(home: Path) -> dict[str, Any]:
         "git": {"available": False},
         "agent": file_info(primary),
     }
+
     files = count_files(
         primary,
         patterns=("*",),
@@ -199,6 +206,124 @@ def collect_local_hermes(home: Path) -> dict[str, Any]:
     result["bySuffix"] = files.get("bySuffix", {})
     result["latest"] = files.get("latest", [])
     return sanitize(result)
+
+
+def _collect_local_hermes_root(root: Path, home: Path) -> dict[str, Any]:
+    return {
+        "available": root.exists(),
+        "root": file_info(root),
+        "auth": {**file_info(root / "auth.json"), "redacted": True},
+        "authLock": file_info(root / "auth.lock"),
+        "codexAuth": {**file_info(home / ".codex" / "auth.json"), "redacted": True},
+        "config": _safe_structured_keys(root / "config.yaml"),
+        "channelDirectory": _safe_structured_keys(root / "channel_directory.json"),
+        "gatewayState": _safe_structured_keys(root / "gateway_state.json"),
+        "processes": _safe_structured_keys(root / "processes.json"),
+        "state": collect_hermes_state(root / "state.db"),
+        "kanban": collect_hermes_kanban(root / "kanban.db"),
+        "sessions": collect_hermes_session_files(root / "sessions"),
+    }
+
+
+def _aggregate_session_files(items: list[dict[str, Any] | None]) -> dict[str, Any]:
+    result = {"files": 0, "bytes": 0, "bySuffix": {}, "latest": []}
+    by_suffix: Counter[str] = Counter()
+    latest = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        result["files"] += int(item.get("files") or 0)
+        result["bytes"] += int(item.get("bytes") or 0)
+        by_suffix.update(item.get("bySuffix") or {})
+        latest.extend(item.get("latest") or [])
+    result["bySuffix"] = dict(by_suffix)
+    latest.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
+    result["latest"] = latest[:25]
+    return result
+
+
+def _aggregate_kanban_state(items: list[dict[str, Any] | None]) -> dict[str, Any]:
+    available = [item for item in items if isinstance(item, dict) and item.get("available")]
+    if not available:
+        return {"available": False}
+    result = dict(available[0])
+    result["database"] = {"path": "multiple", "exists": True}
+    return result
+
+
+def _merge_finalized_swear_meter(target: dict[str, Any], source: dict[str, Any]) -> None:
+    target["directUserMessages"] += int(source.get("directUserMessages") or 0)
+    target["swearIndexMessages"] += int(source.get("swearIndexMessages") or 0)
+    target["swearIndexOccurrences"] += int(source.get("swearIndexOccurrences") or 0)
+    target["swearIndexScore"] += int(source.get("swearIndexScore") or 0)
+    for item in source.get("categories") or []:
+        category_id = str(item.get("id") or "")
+        if category_id:
+            target["categories"][category_id] += int(item.get("occurrences") or 0)
+            target["categoryMessages"][category_id] += int(item.get("messages") or 0)
+            target["categoryScores"][category_id] += int(item.get("score") or 0)
+    for term in source.get("terms") or []:
+        term_name = str(term.get("term") or "")
+        if term_name:
+            target["terms"][term_name] += int(term.get("messages") or 0)
+            target["termOccurrences"][term_name] += int(term.get("occurrences") or 0)
+    for day_row in source.get("timeline") or []:
+        day = str(day_row.get("day") or "")
+        if not day:
+            continue
+        target["timeline"][(day, "messages")] += int(day_row.get("messages") or 0)
+        target["timeline"][(day, "swearMessages")] += int(day_row.get("swearMessages") or 0)
+        for category, values in (day_row.get("categories") or {}).items():
+            target["timeline"][(day, f"categoryMessages:{category}")] += int((values or {}).get("messages") or 0)
+            target["timeline"][(day, f"category:{category}")] += int((values or {}).get("occurrences") or 0)
+
+
+def _aggregate_hermes_state(items: list[dict[str, Any] | None]) -> dict[str, Any]:
+    available = [item for item in items if isinstance(item, dict) and item.get("available")]
+    if not available:
+        return {"available": False}
+
+    totals = {
+        "total": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "estimatedCostUsd": 0.0,
+        "actualCostUsd": 0.0,
+    }
+    message_totals = {"total": 0, "tokens": 0}
+    by_day: dict[str, dict[str, int]] = {}
+    swear = empty_swear_meter()
+
+    for item in available:
+        sessions = item.get("sessions") or {}
+        for key in totals:
+            totals[key] += sessions.get(key) or 0
+        messages = item.get("messages") or {}
+        message_totals["total"] += int(messages.get("total") or 0)
+        message_totals["tokens"] += int(messages.get("tokens") or 0)
+        for row in item.get("byDay") or []:
+            day = str(row.get("day") or "")
+            if not day:
+                continue
+            current = by_day.setdefault(day, {"day": day, "sessions": 0, "tokens": 0})
+            current["sessions"] += int(row.get("sessions") or 0)
+            current["tokens"] += int(row.get("tokens") or 0)
+        _merge_finalized_swear_meter(swear, item.get("swearMeter") or {})
+
+    result = dict(available[0])
+    result["database"] = {"path": "multiple", "exists": True}
+    result["sessions"] = totals
+    messages = result.get("messages") or {}
+    messages["total"] = message_totals["total"]
+    messages["tokens"] = message_totals["tokens"]
+    result["messages"] = messages
+    result["byDay"] = [by_day[day] for day in sorted(by_day.keys())]
+    result["swearMeter"] = finalize_swear_meter(swear)
+    result["available"] = True
+    return result
 
 
 def collect_hermes_state(db: Path) -> dict[str, Any]:
@@ -255,6 +380,19 @@ def collect_hermes_state(db: Path) -> dict[str, Any]:
                     "from sessions order by (input_tokens + output_tokens + reasoning_tokens) desc limit 20",
                 )
             ]
+            result["byDay"] = query_rows(
+                con,
+                "select "
+                "case "
+                "when typeof(coalesce(ended_at, started_at, '')) in ('integer','real') "
+                "or coalesce(ended_at, started_at, '') glob '[0-9]*' "
+                "then date(datetime(coalesce(ended_at, started_at), 'unixepoch')) "
+                "else substr(coalesce(ended_at, started_at, ''), 1, 10) "
+                "end as day, "
+                "count(*) sessions, "
+                "coalesce(sum(input_tokens + output_tokens + reasoning_tokens),0) tokens "
+                "from sessions group by day having day != '' order by day asc",
+            )
         if table_count(con, "messages") is not None:
             result["messages"] = {
                 "total": table_count(con, "messages") or 0,
@@ -266,11 +404,44 @@ def collect_hermes_state(db: Path) -> dict[str, Any]:
                     "where tool_name is not null and tool_name != '' group by tool_name order by count desc limit 30",
                 ),
             }
+            result["swearMeter"] = _collect_hermes_swear_meter(con)
     except sqlite3.Error as exc:
         result["error"] = safe_preview(exc)
     finally:
         con.close()
     return result
+
+
+def _collect_hermes_swear_meter(con: sqlite3.Connection) -> dict[str, Any]:
+    summary = empty_swear_meter()
+    try:
+        rows = query_rows(
+            con,
+            "select m.content as content, m.timestamp as message_ts, s.started_at as session_started "
+            "from messages m "
+            "left join sessions s on s.id = m.session_id "
+            "where lower(coalesce(m.role,'')) = 'user' and m.content is not null and m.content != ''",
+        )
+    except sqlite3.Error:
+        return finalize_swear_meter(summary)
+
+    for row in rows:
+        content = str(row.get("content") or "")
+        raw_ts = row.get("message_ts") or row.get("session_started")
+        timestamp = timestamp_to_iso(raw_ts) or str(raw_ts or "")
+        item = analyze_user_message(content, timestamp)
+        summary["directUserMessages"] += int(item.get("directUserMessages") or 0)
+        summary["swearIndexMessages"] += int(item.get("swearIndexMessages") or 0)
+        summary["swearIndexOccurrences"] += int(item.get("swearIndexOccurrences") or 0)
+        summary["swearIndexScore"] += int(item.get("swearIndexScore") or 0)
+        summary["groups"].update(item.get("groups") or {})
+        summary["categories"].update(item.get("categories") or {})
+        summary["categoryMessages"].update(item.get("categoryMessages") or {})
+        summary["categoryScores"].update(item.get("categoryScores") or {})
+        summary["terms"].update(item.get("terms") or {})
+        summary["termOccurrences"].update(item.get("termOccurrences") or {})
+        summary["timeline"].update(item.get("timeline") or {})
+    return finalize_swear_meter(summary)
 
 
 def collect_hermes_kanban(db: Path) -> dict[str, Any]:
