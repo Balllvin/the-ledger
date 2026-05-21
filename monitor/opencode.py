@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .sanitize import safe_preview, sanitize
-from .utils import count_files, default_home, file_info, open_sqlite_readonly, path_for_display, query_rows, table_count, timestamp_to_iso
+from .utils import count_files, default_home, file_info, is_dataless, open_sqlite_readonly, path_for_display, query_rows, table_count, timestamp_to_iso
 
 
 def collect_opencode(home: Path | None = None) -> dict[str, Any]:
@@ -65,6 +65,7 @@ def collect_opencode_database(db: Path) -> dict[str, Any]:
         projects = _project_usage(con, messages["bySession"])
         result["messages"] = messages["summary"]
         result["models"] = messages["models"]
+        result["tokensByModel"] = messages["tokensByModel"]
         result["providers"] = messages["providers"]
         result["projects"] = projects
         result["recentSessions"] = _session_rows(con, messages["bySession"], order_by="time_updated desc", limit=60)
@@ -110,6 +111,9 @@ def collect_opencode_app(root: Path, home: Path) -> dict[str, Any]:
 def _message_usage(con: sqlite3.Connection) -> dict[str, Any]:
     by_session: dict[str, dict[str, Any]] = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "messages": 0, "assistantMessages": 0, "tools": 0})
     models: Counter[str] = Counter()
+    tokens_by_model: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"total": 0, "input": 0, "output": 0, "reasoning": 0, "cacheRead": 0, "cacheWrite": 0}
+    )
     providers: Counter[str] = Counter()
     roles: Counter[str] = Counter()
     total_tokens = 0
@@ -136,11 +140,20 @@ def _message_usage(con: sqlite3.Connection) -> dict[str, Any]:
             session["assistantMessages"] += 1
         if data.get("providerID"):
             providers[str(data["providerID"])] += 1
-        if data.get("modelID"):
-            models[str(data["modelID"])] += 1
         tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
         cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
         current_total = int(tokens.get("total") or 0)
+        model_id = str(data.get("modelID") or "[unknown]")
+        if data.get("modelID"):
+            models[model_id] += 1
+        if current_total or tokens:
+            model_totals = tokens_by_model[model_id]
+            model_totals["total"] += current_total
+            model_totals["input"] += int(tokens.get("input") or 0)
+            model_totals["output"] += int(tokens.get("output") or 0)
+            model_totals["reasoning"] += int(tokens.get("reasoning") or 0)
+            model_totals["cacheRead"] += int(cache.get("read") or 0)
+            model_totals["cacheWrite"] += int(cache.get("write") or 0)
         session["tokens"] += current_total
         total_tokens += current_total
         input_tokens += int(tokens.get("input") or 0)
@@ -176,6 +189,7 @@ def _message_usage(con: sqlite3.Connection) -> dict[str, Any]:
             "costUsd": round(cost, 6),
         },
         "models": dict(models.most_common(20)),
+        "tokensByModel": dict(sorted(tokens_by_model.items(), key=lambda item: item[1]["total"], reverse=True)),
         "providers": dict(providers.most_common(20)),
         "bySession": by_session,
     }
@@ -319,7 +333,7 @@ def _recent_files(root: Path, *, patterns: tuple[str, ...], limit: int) -> dict[
     files: list[tuple[float, Path, int]] = []
     for pattern in patterns:
         for path in root.rglob(pattern):
-            if not path.is_file() or any(part in {"node_modules", ".git", "__pycache__"} for part in path.parts):
+            if not path.is_file() or any(part in {"node_modules", ".git", "__pycache__"} for part in path.parts) or is_dataless(path):
                 continue
             try:
                 stat = path.stat()
@@ -342,9 +356,15 @@ def _find_git_opencode_roots(home: Path) -> list[dict[str, Any]]:
     for root in roots:
         if not root.exists():
             continue
+        if not _allow_broad_scan(root):
+            for candidate in _targeted_git_opencode_roots(root):
+                found.append(file_info(candidate))
+                if len(found) >= 40:
+                    return found
+            continue
         for current, dirs, _ in os.walk(root):
             current_path = Path(current)
-            dirs[:] = [item for item in dirs if item not in {"node_modules", "__pycache__", ".venv"}]
+            dirs[:] = [item for item in dirs if item not in {"node_modules", "__pycache__", ".venv"} and not is_dataless(current_path / item)]
             if _depth_from(root, current_path) > 5:
                 dirs[:] = []
                 continue
@@ -354,6 +374,30 @@ def _find_git_opencode_roots(home: Path) -> list[dict[str, Any]]:
             if len(found) >= 40:
                 return found
     return found
+
+
+def _targeted_git_opencode_roots(root: Path) -> list[Path]:
+    found: list[Path] = []
+    try:
+        children = [path for path in root.iterdir() if path.is_dir() and not is_dataless(path)]
+    except OSError:
+        return found
+    for child in children[:250]:
+        for candidate in (child / ".git" / "opencode", child / ".opencode"):
+            if candidate.exists() and not is_dataless(candidate):
+                found.append(candidate)
+    return found
+
+
+def _allow_broad_scan(root: Path) -> bool:
+    if os.environ.get("THE_LEDGER_BROAD_SCAN") == "1":
+        return True
+    try:
+        base = default_home().resolve()
+        resolved = root.resolve()
+    except OSError:
+        return False
+    return not (resolved.parent == base and resolved.name in {"Desktop", "Documents", "Downloads", "code", "projects"})
 
 
 def _opencode_version() -> str | None:

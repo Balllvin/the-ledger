@@ -7,12 +7,14 @@ from typing import Any, Iterable
 
 from .sanitize import sanitize
 from .utils import file_info, path_for_display
+from .cursor import cursor_roots
 from .opencode import opencode_roots
 
 
 TEXT_EXTENSIONS = {".env", ".ini", ".json", ".md", ".py", ".toml", ".ts", ".tsx", ".js", ".jsx", ".yaml", ".yml"}
 SKIP_PARTS = {".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache"}
 CODEX_MARKERS = ("CODEX_HOME", ".codex", "codex_auth", "codex", "state_5.sqlite", "logs_2.sqlite")
+MACOS_DATALESS_FLAG = 0x40000000
 
 
 def discover_local_sources(home: Path | None = None) -> dict[str, Any]:
@@ -22,6 +24,7 @@ def discover_local_sources(home: Path | None = None) -> dict[str, Any]:
     codex_app_roots = _discover_codex_app_roots(base)
     hermes_roots = _discover_hermes_roots(base, scan_roots)
     opencode_roots_found = _discover_opencode_roots(base, scan_roots)
+    cursor_roots_found = _discover_cursor_roots(base)
     app_roots = _discover_codex_linked_apps(scan_roots)
     return sanitize(
         {
@@ -30,9 +33,35 @@ def discover_local_sources(home: Path | None = None) -> dict[str, Any]:
             "codexAppRoots": codex_app_roots,
             "hermesRoots": hermes_roots,
             "opencodeRoots": opencode_roots_found,
+            "cursorRoots": cursor_roots_found,
             "appRoots": app_roots,
         }
     )
+
+
+def enrich_discovery_with_workspaces(discovery: dict[str, Any], workspaces: Iterable[Path | str], home: Path | None = None) -> dict[str, Any]:
+    """Add source candidates found from known working directories.
+
+    This keeps startup portable without recursively crawling broad folders. Codex already
+    records where work happened, so those directories are high-signal scan roots.
+    """
+    workspace_roots = _workspace_scan_roots(workspaces)
+    if not workspace_roots:
+        return discovery
+
+    existing_scan_roots = [Path(str(path)).expanduser() for path in discovery.get("scanRoots") or []]
+    merged_scan_roots = _unique_paths([*existing_scan_roots, *workspace_roots])
+    enriched = dict(discovery)
+    enriched["scanRoots"] = [path_for_display(path) for path in merged_scan_roots]
+    enriched["appRoots"] = _merge_records_by_path(
+        discovery.get("appRoots") or [],
+        _discover_codex_linked_apps(workspace_roots),
+    )
+    enriched["hermesRoots"] = _merge_records_by_path(
+        discovery.get("hermesRoots") or [],
+        _discover_hermes_roots(home or Path.home(), workspace_roots),
+    )
+    return sanitize(enriched)
 
 
 def preferred_codex_root(discovery: dict[str, Any], home: Path | None = None) -> Path:
@@ -124,9 +153,11 @@ def _discover_hermes_roots(home: Path, scan_roots: Iterable[Path]) -> list[dict[
         home / "Desktop" / "brain-spa" / "runtime" / "hermes" / "chipmunk",
         *_env_paths("THE_LEDGER_HERMES_ROOTS"),
     ]
+    candidates.extend(_hermes_profile_roots(home / ".hermes"))
     for root in scan_roots:
         if _safe_resolve(root) == _safe_resolve(home):
             continue
+        candidates.extend(_targeted_hermes_roots(root))
         candidates.extend(_find_hermes_state_dirs(root, max_depth=7, limit=20))
     roots = []
     seen: set[str] = set()
@@ -149,6 +180,70 @@ def _discover_hermes_roots(home: Path, scan_roots: Iterable[Path]) -> list[dict[
     return roots
 
 
+def _hermes_profile_roots(root: Path) -> list[Path]:
+    profiles = root / "profiles"
+    if not profiles.exists():
+        return []
+    try:
+        return [path for path in profiles.iterdir() if path.is_dir()]
+    except OSError:
+        return []
+
+
+def _targeted_hermes_roots(root: Path) -> list[Path]:
+    candidates = [
+        root / ".hermes",
+        root / "hermes" / ".hermes",
+        root / "runtime" / "hermes",
+        root / "hermes" / "runtime",
+        root / "hermes" / "runtime" / "hermes",
+        root / "runtime",
+    ]
+    found: list[Path] = []
+    for candidate in candidates:
+        found.extend(_direct_hermes_state_roots(candidate))
+    try:
+        children = [path for path in root.iterdir() if path.is_dir() and not _is_dataless(path)]
+    except OSError:
+        children = []
+    for child in children:
+        if child.name in {".git", "node_modules", "__pycache__", ".pytest_cache", "oss-inspection"}:
+            continue
+        for candidate in (
+            child / ".hermes",
+            child / "hermes" / ".hermes",
+            child / "runtime" / "hermes",
+            child / "hermes" / "runtime",
+            child / "hermes" / "runtime" / "hermes",
+        ):
+            found.extend(_direct_hermes_state_roots(candidate))
+    return found
+
+
+def _direct_hermes_state_roots(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    if _looks_like_hermes_state_root(root):
+        return [root]
+    found: list[Path] = []
+    try:
+        children = [path for path in root.iterdir() if path.is_dir() and not _is_dataless(path)]
+    except OSError:
+        return []
+    for child in children:
+        if child.name in {".git", "node_modules", "__pycache__", ".pytest_cache", "oss-inspection", "state-snapshots"}:
+            continue
+        if _looks_like_hermes_state_root(child):
+            found.append(child)
+        elif child.name in {"profiles", "runtime", "hermes"}:
+            found.extend(_direct_hermes_state_roots(child))
+    return found
+
+
+def _looks_like_hermes_state_root(path: Path) -> bool:
+    return (path / "state.db").exists() or (path / "gateway_state.json").exists() or (path / "auth.json").exists()
+
+
 def _discover_opencode_roots(home: Path, scan_roots: Iterable[Path]) -> list[dict[str, Any]]:
     candidates = list(opencode_roots(home).values())
     for root in scan_roots:
@@ -168,6 +263,21 @@ def _discover_opencode_roots(home: Path, scan_roots: Iterable[Path]) -> list[dic
                 "auth": {**file_info(resolved / "auth.json"), "redacted": True},
                 "database": file_info(resolved / "opencode.db"),
                 "logs": file_info(resolved / "log"),
+            }
+        )
+    roots.sort(key=lambda item: (not bool(item.get("exists")), str(item.get("path"))))
+    return roots
+
+
+def _discover_cursor_roots(home: Path) -> list[dict[str, Any]]:
+    roots = []
+    for name, path in cursor_roots(home).items():
+        resolved = _safe_resolve(path)
+        roots.append(
+            {
+                **file_info(resolved),
+                "name": name,
+                "globalState": file_info(resolved / "state.vscdb") if name == "globalStorage" else {},
             }
         )
     roots.sort(key=lambda item: (not bool(item.get("exists")), str(item.get("path"))))
@@ -244,6 +354,8 @@ def _app_root_for(path: Path, scan_root: Path) -> Path:
 
 
 def _find_named_dirs(root: Path, name: str, *, max_depth: int, limit: int) -> list[Path]:
+    if not _allow_broad_scan(root):
+        return _find_named_dirs_targeted(root, name, max_depth=max_depth, limit=limit)
     found: list[Path] = []
     visited = 0
     for current, dirs, _ in os.walk(root):
@@ -251,7 +363,7 @@ def _find_named_dirs(root: Path, name: str, *, max_depth: int, limit: int) -> li
         if visited > 2500:
             break
         current_path = Path(current)
-        dirs[:] = [item for item in dirs if item not in SKIP_PARTS]
+        dirs[:] = [item for item in dirs if item not in SKIP_PARTS and not _is_dataless(current_path / item)]
         if _depth_from(root, current_path) > max_depth:
             dirs[:] = []
             continue
@@ -264,6 +376,8 @@ def _find_named_dirs(root: Path, name: str, *, max_depth: int, limit: int) -> li
 
 
 def _find_hermes_state_dirs(root: Path, *, max_depth: int, limit: int) -> list[Path]:
+    if not _allow_broad_scan(root):
+        return []
     found: list[Path] = []
     visited = 0
     for current, dirs, files in os.walk(root):
@@ -271,7 +385,7 @@ def _find_hermes_state_dirs(root: Path, *, max_depth: int, limit: int) -> list[P
         if visited > 4000:
             break
         current_path = Path(current)
-        dirs[:] = [item for item in dirs if item not in SKIP_PARTS and item != "oss-inspection"]
+        dirs[:] = [item for item in dirs if item not in SKIP_PARTS and item != "oss-inspection" and not _is_dataless(current_path / item)]
         if _depth_from(root, current_path) > max_depth:
             dirs[:] = []
             continue
@@ -285,6 +399,8 @@ def _find_hermes_state_dirs(root: Path, *, max_depth: int, limit: int) -> list[P
 
 
 def _find_git_opencode_dirs(root: Path, *, max_depth: int, limit: int) -> list[Path]:
+    if not _allow_broad_scan(root):
+        return []
     found: list[Path] = []
     visited = 0
     for current, dirs, _ in os.walk(root):
@@ -292,7 +408,7 @@ def _find_git_opencode_dirs(root: Path, *, max_depth: int, limit: int) -> list[P
         if visited > 2500:
             break
         current_path = Path(current)
-        dirs[:] = [item for item in dirs if item not in SKIP_PARTS]
+        dirs[:] = [item for item in dirs if item not in SKIP_PARTS and not _is_dataless(current_path / item)]
         if _depth_from(root, current_path) > max_depth:
             dirs[:] = []
             continue
@@ -305,6 +421,9 @@ def _find_git_opencode_dirs(root: Path, *, max_depth: int, limit: int) -> list[P
 
 
 def _iter_files(root: Path, *, max_depth: int, limit: int) -> Iterable[Path]:
+    if not _allow_broad_scan(root):
+        yield from _iter_targeted_files(root, limit=limit)
+        return
     count = 0
     visited = 0
     for current, dirs, files in os.walk(root):
@@ -312,7 +431,7 @@ def _iter_files(root: Path, *, max_depth: int, limit: int) -> Iterable[Path]:
         if visited > 2500:
             return
         current_path = Path(current)
-        dirs[:] = [item for item in dirs if item not in SKIP_PARTS and item not in {"runtime", "oss-inspection"}]
+        dirs[:] = [item for item in dirs if item not in SKIP_PARTS and item not in {"runtime", "oss-inspection"} and not _is_dataless(current_path / item)]
         if _depth_from(root, current_path) > max_depth:
             dirs[:] = []
             continue
@@ -320,7 +439,9 @@ def _iter_files(root: Path, *, max_depth: int, limit: int) -> Iterable[Path]:
             count += 1
             if count > limit:
                 return
-            yield current_path / file_name
+            path = current_path / file_name
+            if not _is_dataless(path):
+                yield path
 
 
 def _depth_from(root: Path, path: Path) -> int:
@@ -343,11 +464,126 @@ def _existing_unique(paths: Iterable[Path]) -> list[Path]:
     for path in paths:
         resolved = _safe_resolve(path)
         key = str(resolved).lower()
-        if key in seen or not resolved.exists():
+        if key in seen or not resolved.exists() or _is_dataless(resolved):
             continue
         seen.add(key)
         result.append(resolved)
     return result
+
+
+def _unique_paths(paths: Iterable[Path]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        resolved = _safe_resolve(path)
+        key = str(resolved).lower()
+        if key in seen or _is_dataless(resolved):
+            continue
+        seen.add(key)
+        result.append(resolved)
+    return result
+
+
+def _merge_records_by_path(existing: list[dict[str, Any]], extra: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_path: dict[str, dict[str, Any]] = {}
+    for item in [*existing, *extra]:
+        path = str(item.get("path") or "")
+        key = path.lower()
+        if not key:
+            continue
+        current = by_path.get(key)
+        if current is None:
+            by_path[key] = dict(item)
+            continue
+        merged = dict(current)
+        merged.update({key: value for key, value in item.items() if value not in (None, "", [], {})})
+        if isinstance(current.get("signals"), dict) or isinstance(item.get("signals"), dict):
+            counts = Counter(current.get("signals") or {})
+            counts.update(item.get("signals") or {})
+            merged["signals"] = dict(counts.most_common())
+            merged["signalCount"] = sum(counts.values())
+        by_path[key] = merged
+    records = list(by_path.values())
+    records.sort(key=lambda item: (int(item.get("signalCount") or 0), str(item.get("path") or "")), reverse=True)
+    return records
+
+
+def _workspace_scan_roots(workspaces: Iterable[Path | str]) -> list[Path]:
+    candidates: list[Path] = []
+    for raw in workspaces:
+        path = Path(str(raw)).expanduser()
+        if not str(path) or str(path) == "[unknown]":
+            continue
+        candidates.extend([path, path.parent, path.parent.parent])
+    return [path for path in _unique_paths(candidates) if path.exists()]
+
+
+def _find_named_dirs_targeted(root: Path, name: str, *, max_depth: int, limit: int) -> list[Path]:
+    found: list[Path] = []
+    for current in _targeted_dirs(root, max_depth=max_depth, limit=600):
+        if current.name == name:
+            found.append(current)
+            if len(found) >= limit:
+                break
+    return found
+
+
+def _iter_targeted_files(root: Path, *, limit: int) -> Iterable[Path]:
+    count = 0
+    for directory in _targeted_dirs(root, max_depth=3, limit=500):
+        try:
+            children = list(directory.iterdir())
+        except OSError:
+            continue
+        for path in children:
+            if count >= limit:
+                return
+            if path.is_file() and not _is_dataless(path):
+                count += 1
+                yield path
+
+
+def _targeted_dirs(root: Path, *, max_depth: int, limit: int) -> Iterable[Path]:
+    queue = [root]
+    seen = 0
+    while queue and seen < limit:
+        current = queue.pop(0)
+        seen += 1
+        if _is_dataless(current):
+            continue
+        yield current
+        if _depth_from(root, current) >= max_depth:
+            continue
+        try:
+            children = [path for path in current.iterdir() if path.is_dir()]
+        except OSError:
+            continue
+        for child in children:
+            if child.name in SKIP_PARTS or child.name in {"oss-inspection", "state-snapshots"} or _is_dataless(child):
+                continue
+            queue.append(child)
+
+
+def _allow_broad_scan(root: Path) -> bool:
+    if os.environ.get("THE_LEDGER_BROAD_SCAN") == "1":
+        return True
+    if os.environ.get("THE_LEDGER_DEEP_TEXT_SCAN") == "1":
+        return True
+    try:
+        home = Path.home().resolve()
+        resolved = _safe_resolve(root)
+    except OSError:
+        return False
+    broad_names = {"Desktop", "Documents", "Downloads", "Developer", "dev", "code", "projects", "source"}
+    return not (resolved.parent == home and resolved.name in broad_names)
+
+
+def _is_dataless(path: Path) -> bool:
+    try:
+        flags = getattr(path.stat(), "st_flags", 0)
+    except OSError:
+        return False
+    return bool(flags & MACOS_DATALESS_FLAG)
 
 
 def _safe_resolve(path: Path) -> Path:
