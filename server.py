@@ -333,15 +333,20 @@ def main() -> None:
     parser.add_argument("--no-hermes", action="store_true", help="Skip Hermes/Codex-agent records for this scan.")
     parser.add_argument("--daily-rundown", action="store_true", help="Print the local daily usage rundown and exit.")
     parser.add_argument("--send-telegram", action="store_true", help="Send the local daily usage rundown with TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
+    parser.add_argument("--telegram-dry-run", action="store_true", help="Print the Telegram payload without sending it.")
     parser.add_argument("--day", help="Day to summarize as YYYY-MM-DD.")
     parser.add_argument("--timezone", help="IANA timezone label for the rundown.")
     args = parser.parse_args()
     if args.warm_cache:
         refresh_snapshot(include_hermes=not args.no_hermes)
         return
-    if args.daily_rundown or args.send_telegram:
+    if args.daily_rundown or args.send_telegram or args.telegram_dry_run:
         payload = refresh_snapshot(include_hermes=True, refresh_recent=True)
         rundown = build_daily_rundown(payload, day=args.day, timezone_name=args.timezone)
+        if args.telegram_dry_run:
+            print("Telegram dry run payload:")
+            print(rundown["text"])
+            return
         if args.send_telegram:
             result = send_telegram_message(rundown["text"])
             if not result.get("ok"):

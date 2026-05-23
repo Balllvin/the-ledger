@@ -101,6 +101,12 @@ Print the local daily rundown without sending anything:
 python3 -S server.py --daily-rundown --day YYYY-MM-DD --timezone Europe/Zurich
 ```
 
+Preview the exact Telegram payload without sending it:
+
+```bash
+python3 -S server.py --telegram-dry-run --day YYYY-MM-DD --timezone Europe/Zurich
+```
+
 Send through a Telegram bot:
 
 ```bash

@@ -88,6 +88,12 @@ Print a privacy-safe local message:
 python3 -S server.py --daily-rundown --day YYYY-MM-DD --timezone Europe/Zurich
 ```
 
+Preview the exact Telegram payload without sending:
+
+```bash
+python3 -S server.py --telegram-dry-run --day YYYY-MM-DD --timezone Europe/Zurich
+```
+
 Send the same message through a Telegram bot:
 
 ```bash

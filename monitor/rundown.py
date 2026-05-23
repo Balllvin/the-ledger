@@ -19,8 +19,9 @@ def build_daily_rundown(snapshot: dict[str, Any], *, day: str | None = None, tim
     codex_sessions = (snapshot.get("codex") or {}).get("sessions") or {}
     codex_human_meter = (codex_sessions.get("swearByOrigin") or {}).get("human") or codex_sessions.get("swearMeter") or {}
     codex_agent_meter = (codex_sessions.get("swearByOrigin") or {}).get("agent") or {}
+    codex_state_projects = (((snapshot.get("codex") or {}).get("state") or {}).get("projects") or {})
     hermes_state = (((snapshot.get("hermes") or {}).get("local") or {}).get("state") or (snapshot.get("hermes") or {}).get("state") or {})
-    codex_usage = _row_for_day(codex_sessions.get("timeline") or [], resolved_day, session_key="sessions")
+    codex_usage = _codex_usage_for_day(codex_state_projects.get("total") or [], codex_sessions.get("timeline") or [], resolved_day)
     hermes_usage = _row_for_day(hermes_state.get("byDay") or [], resolved_day, session_key="sessions")
     codex_prompt = _swear_row_for_day(codex_human_meter, resolved_day)
     codex_agent_prompt = _swear_row_for_day(codex_agent_meter, resolved_day)
@@ -42,19 +43,28 @@ def build_daily_rundown(snapshot: dict[str, Any], *, day: str | None = None, tim
 
     lines = [
         f"Ledger daily rundown for {resolved_day} ({timezone_label})",
-        f"- Total usage (Codex + Hermes): {_fmt(codex_tokens + hermes_tokens)} tokens, {_fmt(codex_session_count + hermes_session_count)} sessions",
-        f"- Codex: {_fmt(codex_tokens)} tokens, {_fmt(codex_session_count)} sessions",
+        f"- Total usage ({codex_usage['sourceLabel']} + Hermes): {_fmt(codex_tokens + hermes_tokens)} tokens, {_fmt(codex_session_count + hermes_session_count)} runs",
+        f"- Codex: {_fmt(codex_tokens)} tokens, {_fmt(codex_session_count)} {codex_usage['unit']} ({codex_usage['sourceLabel']})",
         f"- Hermes: {_fmt(hermes_tokens)} tokens, {_fmt(hermes_session_count)} sessions",
         f"- Direct prompts checked: {_fmt(total_prompt_count)} ({_fmt(codex_prompt_count)} Codex, {_fmt(hermes_prompt_count)} Hermes)",
         f"- Frustration index: {_fmt(total_index_count)}/{_fmt(total_prompt_count)} direct prompts ({_pct(total_index_count, total_prompt_count)})",
         f"- Codex agent prompts excluded from prompt metrics: {_fmt(codex_agent_prompt.get('messages'))} for this day",
         f"- Codex transcript user items excluded from prompt metrics: {_fmt(model_input_items)} lifetime items",
-        f"- Lifetime check -> Codex: {_fmt(overview.get('codexJsonlTokens'))} tokens/{_fmt(overview.get('codexSessionFiles'))} sessions | Hermes: {_fmt(overview.get('hermesTokens'))} tokens/{_fmt(overview.get('hermesSessions'))} sessions",
+        f"- Lifetime check -> Codex state ledger: {_fmt(overview.get('codexStateTokens'))} tokens/{_fmt(overview.get('codexThreads'))} threads | Codex JSONL scan: {_fmt(overview.get('codexJsonlTokens'))} tokens/{_fmt(overview.get('codexSessionFiles'))} sessions | Hermes: {_fmt(overview.get('hermesTokens'))} tokens/{_fmt(overview.get('hermesSessions'))} sessions",
     ]
+    source_check = _codex_source_check_line(codex_usage)
+    if source_check:
+        lines.append(source_check)
+    zero_check = _zero_check_line("Codex", codex_usage, overview.get("codexStateTokens") or overview.get("codexJsonlTokens"))
+    if zero_check:
+        lines.append(zero_check)
     if hermes_last_active:
         lines.append(
             f"- Hermes last active day: {hermes_last_active['day']} ({_fmt(hermes_last_active.get('tokens'))} tokens, {_fmt(hermes_last_active.get('sessions'))} sessions)"
         )
+    hermes_zero_check = _zero_check_line("Hermes", hermes_usage, overview.get("hermesTokens"))
+    if hermes_zero_check:
+        lines.append(hermes_zero_check)
     if timezone_warning:
         lines.append(f"- Timezone note: {timezone_warning}")
 
@@ -63,7 +73,15 @@ def build_daily_rundown(snapshot: dict[str, Any], *, day: str | None = None, tim
         "timezone": timezone_label,
         "timezoneWarning": timezone_warning,
         "text": "\n".join(lines),
-        "codex": {"tokens": codex_tokens, "sessions": codex_session_count, "directPrompts": codex_prompt_count, "indexPrompts": codex_index_count},
+        "codex": {
+            "tokens": codex_tokens,
+            "sessions": codex_session_count,
+            "source": codex_usage["source"],
+            "state": codex_usage["state"],
+            "jsonl": codex_usage["jsonl"],
+            "directPrompts": codex_prompt_count,
+            "indexPrompts": codex_index_count,
+        },
         "hermes": {"tokens": hermes_tokens, "sessions": hermes_session_count, "directPrompts": hermes_prompt_count, "indexPrompts": hermes_index_count},
         "modelInputUserItems": model_input_items,
     }
@@ -114,6 +132,54 @@ def _row_for_day(rows: list[dict[str, Any]], day: str, *, session_key: str) -> d
         if str(row.get("day") or "") == day:
             return {"tokens": int(row.get("tokens") or 0), "sessions": int(row.get(session_key) or row.get("threads") or 0)}
     return {"tokens": 0, "sessions": 0}
+
+
+def _codex_usage_for_day(state_rows: list[dict[str, Any]], jsonl_rows: list[dict[str, Any]], day: str) -> dict[str, Any]:
+    state = _row_for_day(state_rows, day, session_key="threads")
+    jsonl = _row_for_day(jsonl_rows, day, session_key="sessions")
+    if state["tokens"] or state["sessions"]:
+        selected = state
+        source = "state"
+        source_label = "Codex state ledger"
+        unit = "threads"
+    else:
+        selected = jsonl
+        source = "jsonl"
+        source_label = "Codex JSONL scan"
+        unit = "sessions"
+    return {
+        "tokens": selected["tokens"],
+        "sessions": selected["sessions"],
+        "source": source,
+        "sourceLabel": source_label,
+        "unit": unit,
+        "state": state,
+        "jsonl": jsonl,
+    }
+
+
+def _codex_source_check_line(usage: dict[str, Any]) -> str | None:
+    state = usage.get("state") or {}
+    jsonl = usage.get("jsonl") or {}
+    if state == jsonl:
+        return None
+    has_state = int(state.get("tokens") or 0) or int(state.get("sessions") or 0)
+    has_jsonl = int(jsonl.get("tokens") or 0) or int(jsonl.get("sessions") or 0)
+    if not has_state and not has_jsonl:
+        return None
+    return (
+        "- Codex source check -> "
+        f"state ledger: {_fmt(state.get('tokens'))} tokens/{_fmt(state.get('sessions'))} threads | "
+        f"JSONL scan: {_fmt(jsonl.get('tokens'))} tokens/{_fmt(jsonl.get('sessions'))} sessions"
+    )
+
+
+def _zero_check_line(label: str, usage: dict[str, Any], lifetime_tokens: Any) -> str | None:
+    if int(usage.get("tokens") or 0) or int(usage.get("sessions") or 0):
+        return None
+    if not int(lifetime_tokens or 0):
+        return None
+    return f"- Zero-check: {label} has lifetime records but no usage row for this day."
 
 
 def _swear_row_for_day(meter: dict[str, Any], day: str) -> dict[str, int]:

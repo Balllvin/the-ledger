@@ -387,7 +387,7 @@ function selectedOverview(data) {
   const cursorSummary = (data.cursor || {}).summary || {};
   const codex = hasSystem("codex")
     ? {
-        tokens: Number(overview.codexJsonlTokens || overview.codexStateTokens || 0) + Number(overview.hermesTokens || 0),
+        tokens: codexUsageTokens(data) + Number(overview.hermesTokens || 0),
         runs: Number(overview.codexThreads || 0) + Number(overview.hermesSessions || 0),
         projects: codexProjects.length + hermesAgentProjects.length,
         logs: overview.codexLogRows || 0,
@@ -433,6 +433,13 @@ function selectedOverview(data) {
     tokenBreakdown: selectedTokenBreakdown(data),
     costEstimate: selectedCostEstimate(data),
   };
+}
+
+function codexUsageTokens(data) {
+  const overview = data.overview || {};
+  const projectTotals = codexProjectsData(data);
+  const timelineTokens = (projectTotals.total || []).reduce((total, row) => total + Number(row.tokens || 0), 0);
+  return timelineTokens || Number(overview.codexStateTokens || 0) || Number(overview.codexJsonlTokens || 0);
 }
 
 function prefixProject(project, system) {
@@ -491,9 +498,11 @@ function hermesProjects(data) {
 }
 
 function codexProjectsData(data) {
+  const stateProjects = (((data.codex || {}).state || {}).projects || {});
+  if ((stateProjects.projects || []).length) return stateProjects;
   const sessions = ((data.codex || {}).sessions || {});
   if ((sessions.projects || {}).projects?.length) return sessions.projects;
-  return (((data.codex || {}).state || {}).projects || {});
+  return {};
 }
 
 function projectData(data) {
@@ -837,8 +846,8 @@ function renderUsagePage(data) {
     "#overview-grid",
     [
       metric("Total tokens", formatCompact(overview.tokens), `${formatNumber(overview.runs)} sessions`),
-      metric("Input tokens", formatCompact(tokenBreakdown.input), `${formatCompact(tokenBreakdown.cacheRead)} cached`),
-      metric("Output tokens", formatCompact(tokenBreakdown.output), `${formatCompact(tokenBreakdown.reasoning)} reasoning`),
+      metric("Input tokens", formatCompact(tokenBreakdown.input), `${formatCompact(tokenBreakdown.cacheRead)} cached, parsed JSONL`),
+      metric("Output tokens", formatCompact(tokenBreakdown.output), `${formatCompact(tokenBreakdown.reasoning)} reasoning, parsed JSONL`),
       metric("Input cost", formatCurrency(costEstimate.inputUsd), `${formatCompact(costEstimate.inputTokens)} billable${fallbackNote}`),
       metric("Output cost", formatCurrency(costEstimate.outputUsd), `${formatCompact(costEstimate.outputTokens + costEstimate.reasoningTokens)} output + reasoning`),
       metric("Projects", formatNumber(overview.projects), "Selected workspaces"),
