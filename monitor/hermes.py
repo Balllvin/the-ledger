@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .sanitize import sanitize, safe_preview
+from .swear_meter import analyze_user_message, empty_swear_meter, finalize_swear_meter
 from .utils import (
     count_files,
     default_home,
@@ -19,6 +20,8 @@ from .utils import (
     table_count,
     timestamp_to_iso,
 )
+
+MACOS_DATALESS_FLAG = 0x40000000
 
 
 HERMES_WSL_COLLECTOR = r"""
@@ -121,8 +124,8 @@ print(json.dumps({
 """
 
 
-def collect_hermes(home: Path | None = None) -> dict[str, Any]:
-    local = collect_local_hermes(home or default_home())
+def collect_hermes(home: Path | None = None, roots: list[Path] | None = None) -> dict[str, Any]:
+    local = collect_local_hermes(home or default_home(), extra_roots=roots)
     wsl = collect_wsl_hermes()
     preferred = local if local.get("available") else wsl
     result = {
@@ -161,26 +164,31 @@ def collect_wsl_hermes() -> dict[str, Any]:
     return sanitize(data)
 
 
-def collect_local_hermes(home: Path) -> dict[str, Any]:
-    roots = _local_hermes_roots(home)
+def collect_local_hermes(home: Path, *, extra_roots: list[Path] | None = None) -> dict[str, Any]:
+    roots = _local_hermes_roots(home, extra_roots=extra_roots)
     if not roots:
         return {"available": False, "kind": "local", "roots": []}
+
+    root_entries = [_collect_local_hermes_root(root, home) for root in roots]
     primary = roots[0]
+    primary_entry = root_entries[0]
+
     result: dict[str, Any] = {
-        "available": primary.exists(),
+        "available": any(bool(entry.get("available")) for entry in root_entries),
         "kind": "local",
         "root": file_info(primary),
         "roots": [path_for_display(path) for path in roots],
+        "rootsData": root_entries,
         "auth": {**file_info(primary / "auth.json"), "redacted": True},
         "authLock": file_info(primary / "auth.lock"),
         "codexAuth": {**file_info(home / ".codex" / "auth.json"), "redacted": True},
-        "config": _safe_structured_keys(primary / "config.yaml"),
-        "channelDirectory": _safe_structured_keys(primary / "channel_directory.json"),
-        "gatewayState": _safe_structured_keys(primary / "gateway_state.json"),
-        "processes": _safe_structured_keys(primary / "processes.json"),
-        "state": collect_hermes_state(primary / "state.db"),
-        "kanban": collect_hermes_kanban(primary / "kanban.db"),
-        "sessions": collect_hermes_session_files(primary / "sessions"),
+        "config": primary_entry.get("config") or _safe_structured_keys(primary / "config.yaml"),
+        "channelDirectory": primary_entry.get("channelDirectory") or _safe_structured_keys(primary / "channel_directory.json"),
+        "gatewayState": primary_entry.get("gatewayState") or _safe_structured_keys(primary / "gateway_state.json"),
+        "processes": primary_entry.get("processes") or _safe_structured_keys(primary / "processes.json"),
+        "state": _aggregate_hermes_state([entry.get("state") for entry in root_entries]),
+        "kanban": _aggregate_kanban_state([entry.get("kanban") for entry in root_entries]),
+        "sessions": _aggregate_session_files([entry.get("sessions") for entry in root_entries]),
         "files": 0,
         "bytes": 0,
         "bySuffix": {},
@@ -189,21 +197,168 @@ def collect_local_hermes(home: Path) -> dict[str, Any]:
         "git": {"available": False},
         "agent": file_info(primary),
     }
-    files = count_files(
-        primary,
-        patterns=("*",),
-        skip_parts={".git", "node_modules", "__pycache__", ".pytest_cache", "oss-inspection"},
-    )
-    result["files"] = files.get("files", 0)
-    result["bytes"] = files.get("bytes", 0)
-    result["bySuffix"] = files.get("bySuffix", {})
-    result["latest"] = files.get("latest", [])
+
+    session_files = result.get("sessions") or {}
+    result["files"] = session_files.get("files", 0)
+    result["bytes"] = session_files.get("bytes", 0)
+    result["bySuffix"] = session_files.get("bySuffix", {})
+    result["latest"] = session_files.get("latest", [])
     return sanitize(result)
+
+
+def _collect_local_hermes_root(root: Path, home: Path) -> dict[str, Any]:
+    return {
+        "available": root.exists(),
+        "root": file_info(root),
+        "auth": {**file_info(root / "auth.json"), "redacted": True},
+        "authLock": file_info(root / "auth.lock"),
+        "codexAuth": {**file_info(home / ".codex" / "auth.json"), "redacted": True},
+        "config": _safe_structured_keys(root / "config.yaml"),
+        "channelDirectory": _safe_structured_keys(root / "channel_directory.json"),
+        "gatewayState": _safe_structured_keys(root / "gateway_state.json"),
+        "processes": _safe_structured_keys(root / "processes.json"),
+        "state": collect_hermes_state(root / "state.db"),
+        "kanban": {"database": file_info(root / "kanban.db"), "available": (root / "kanban.db").exists(), "skipped": True},
+        "sessions": collect_hermes_session_files(root / "sessions"),
+    }
+
+
+def _aggregate_session_files(items: list[dict[str, Any] | None]) -> dict[str, Any]:
+    result = {"files": 0, "bytes": 0, "bySuffix": {}, "latest": []}
+    by_suffix: Counter[str] = Counter()
+    latest = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        result["files"] += int(item.get("files") or 0)
+        result["bytes"] += int(item.get("bytes") or 0)
+        by_suffix.update(item.get("bySuffix") or {})
+        latest.extend(item.get("latest") or [])
+    result["bySuffix"] = dict(by_suffix)
+    latest.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
+    result["latest"] = latest[:25]
+    return result
+
+
+def _aggregate_kanban_state(items: list[dict[str, Any] | None]) -> dict[str, Any]:
+    available = [item for item in items if isinstance(item, dict) and item.get("available")]
+    if not available:
+        return {"available": False}
+    result = dict(available[0])
+    result["database"] = {"path": "multiple", "exists": True}
+    return result
+
+
+def _merge_finalized_swear_meter(target: dict[str, Any], source: dict[str, Any]) -> None:
+    target["directUserMessages"] += int(source.get("directUserMessages") or 0)
+    target["swearIndexMessages"] += int(source.get("swearIndexMessages") or 0)
+    target["swearIndexOccurrences"] += int(source.get("swearIndexOccurrences") or 0)
+    target["swearIndexScore"] += int(source.get("swearIndexScore") or 0)
+    for item in source.get("categories") or []:
+        category_id = str(item.get("id") or "")
+        if category_id:
+            target["categories"][category_id] += int(item.get("occurrences") or 0)
+            target["categoryMessages"][category_id] += int(item.get("messages") or 0)
+            target["categoryScores"][category_id] += int(item.get("score") or 0)
+    for term in source.get("terms") or []:
+        term_name = str(term.get("term") or "")
+        if term_name:
+            target["terms"][term_name] += int(term.get("messages") or 0)
+            target["termOccurrences"][term_name] += int(term.get("occurrences") or 0)
+    for day_row in source.get("timeline") or []:
+        day = str(day_row.get("day") or "")
+        if not day:
+            continue
+        target["timeline"][(day, "messages")] += int(day_row.get("messages") or 0)
+        target["timeline"][(day, "swearMessages")] += int(day_row.get("swearMessages") or 0)
+        for category, values in (day_row.get("categories") or {}).items():
+            target["timeline"][(day, f"categoryMessages:{category}")] += int((values or {}).get("messages") or 0)
+            target["timeline"][(day, f"category:{category}")] += int((values or {}).get("occurrences") or 0)
+
+
+def _aggregate_hermes_state(items: list[dict[str, Any] | None]) -> dict[str, Any]:
+    available = [item for item in items if isinstance(item, dict) and item.get("available")]
+    if not available:
+        return {"available": False}
+
+    totals = {
+        "total": 0,
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "reasoningTokens": 0,
+        "estimatedCostUsd": 0.0,
+        "actualCostUsd": 0.0,
+    }
+    message_totals = {"total": 0, "tokens": 0}
+    by_day: dict[str, dict[str, int]] = {}
+    by_model: dict[str, dict[str, int]] = {}
+    by_source: dict[str, dict[str, int]] = {}
+    recent_sessions: list[dict[str, Any]] = []
+    top_sessions: list[dict[str, Any]] = []
+    swear = empty_swear_meter()
+
+    for item in available:
+        sessions = item.get("sessions") or {}
+        for key in totals:
+            totals[key] += sessions.get(key) or 0
+        messages = item.get("messages") or {}
+        message_totals["total"] += int(messages.get("total") or 0)
+        message_totals["tokens"] += int(messages.get("tokens") or 0)
+        for row in item.get("byDay") or []:
+            day = str(row.get("day") or "")
+            if not day:
+                continue
+            current = by_day.setdefault(day, {"day": day, "sessions": 0, "tokens": 0})
+            current["sessions"] += int(row.get("sessions") or 0)
+            current["tokens"] += int(row.get("tokens") or 0)
+        for row in item.get("byModel") or []:
+            model = str(row.get("model") or "[unknown]")
+            current = by_model.setdefault(
+                model,
+                {"model": model, "sessions": 0, "tokens": 0, "inputTokens": 0, "outputTokens": 0, "reasoningTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0},
+            )
+            current["sessions"] += int(row.get("sessions") or 0)
+            current["tokens"] += int(row.get("tokens") or 0)
+            current["inputTokens"] += int(row.get("inputTokens") or 0)
+            current["outputTokens"] += int(row.get("outputTokens") or 0)
+            current["reasoningTokens"] += int(row.get("reasoningTokens") or 0)
+            current["cacheReadTokens"] += int(row.get("cacheReadTokens") or 0)
+            current["cacheWriteTokens"] += int(row.get("cacheWriteTokens") or 0)
+        for row in item.get("bySource") or []:
+            source = str(row.get("source") or "[unknown]")
+            current = by_source.setdefault(source, {"source": source, "sessions": 0, "tokens": 0})
+            current["sessions"] += int(row.get("sessions") or 0)
+            current["tokens"] += int(row.get("tokens") or 0)
+        recent_sessions.extend(item.get("recentSessions") or [])
+        top_sessions.extend(item.get("topSessions") or [])
+        _merge_finalized_swear_meter(swear, item.get("swearMeter") or {})
+
+    result = dict(available[0])
+    result["database"] = {"path": "multiple", "exists": True}
+    result["sessions"] = totals
+    messages = result.get("messages") or {}
+    messages["total"] = message_totals["total"]
+    messages["tokens"] = message_totals["tokens"]
+    result["messages"] = messages
+    result["byDay"] = [by_day[day] for day in sorted(by_day.keys())]
+    result["byModel"] = sorted(by_model.values(), key=lambda row: int(row.get("tokens") or 0), reverse=True)[:20]
+    result["bySource"] = sorted(by_source.values(), key=lambda row: int(row.get("sessions") or 0), reverse=True)[:20]
+    result["recentSessions"] = sorted(recent_sessions, key=lambda row: str(row.get("ended") or row.get("started") or ""), reverse=True)[:40]
+    result["topSessions"] = sorted(top_sessions, key=lambda row: int(row.get("tokens") or 0), reverse=True)[:20]
+    result["swearMeter"] = finalize_swear_meter(swear)
+    result["available"] = True
+    return result
 
 
 def collect_hermes_state(db: Path) -> dict[str, Any]:
     result: dict[str, Any] = {"database": file_info(db), "available": False}
     if not db.exists():
+        return result
+    if _is_dataless(db):
+        result["skipped"] = True
+        result["error"] = "SQLite file is a dataless local placeholder"
         return result
     try:
         con = open_sqlite_readonly(db)
@@ -228,7 +383,12 @@ def collect_hermes_state(db: Path) -> dict[str, Any]:
             result["byModel"] = query_rows(
                 con,
                 "select coalesce(model,'[unknown]') model, count(*) sessions, "
-                "coalesce(sum(input_tokens + output_tokens + reasoning_tokens),0) tokens "
+                "coalesce(sum(input_tokens + output_tokens + reasoning_tokens),0) tokens, "
+                "coalesce(sum(input_tokens),0) inputTokens, "
+                "coalesce(sum(output_tokens),0) outputTokens, "
+                "coalesce(sum(reasoning_tokens),0) reasoningTokens, "
+                "coalesce(sum(cache_read_tokens),0) cacheReadTokens, "
+                "coalesce(sum(cache_write_tokens),0) cacheWriteTokens "
                 "from sessions group by model order by tokens desc limit 20",
             )
             result["bySource"] = query_rows(
@@ -242,7 +402,8 @@ def collect_hermes_state(db: Path) -> dict[str, Any]:
                 for row in query_rows(
                     con,
                     "select id,title,source,model,started_at,ended_at,end_reason,message_count,tool_call_count,"
-                    "input_tokens,output_tokens,reasoning_tokens,estimated_cost_usd,cost_status "
+                    "input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,"
+                    "billing_provider,billing_mode,estimated_cost_usd,actual_cost_usd,cost_status,cost_source "
                     "from sessions order by coalesce(ended_at, started_at) desc limit 40",
                 )
             ]
@@ -251,10 +412,24 @@ def collect_hermes_state(db: Path) -> dict[str, Any]:
                 for row in query_rows(
                     con,
                     "select id,title,source,model,started_at,ended_at,end_reason,message_count,tool_call_count,"
-                    "input_tokens,output_tokens,reasoning_tokens,estimated_cost_usd,cost_status "
+                    "input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,"
+                    "billing_provider,billing_mode,estimated_cost_usd,actual_cost_usd,cost_status,cost_source "
                     "from sessions order by (input_tokens + output_tokens + reasoning_tokens) desc limit 20",
                 )
             ]
+            result["byDay"] = query_rows(
+                con,
+                "select "
+                "case "
+                "when typeof(coalesce(ended_at, started_at, '')) in ('integer','real') "
+                "or coalesce(ended_at, started_at, '') glob '[0-9]*' "
+                "then date(datetime(coalesce(ended_at, started_at), 'unixepoch')) "
+                "else substr(coalesce(ended_at, started_at, ''), 1, 10) "
+                "end as day, "
+                "count(*) sessions, "
+                "coalesce(sum(input_tokens + output_tokens + reasoning_tokens),0) tokens "
+                "from sessions group by day having day != '' order by day asc",
+            )
         if table_count(con, "messages") is not None:
             result["messages"] = {
                 "total": table_count(con, "messages") or 0,
@@ -266,6 +441,7 @@ def collect_hermes_state(db: Path) -> dict[str, Any]:
                     "where tool_name is not null and tool_name != '' group by tool_name order by count desc limit 30",
                 ),
             }
+            result["swearMeter"] = _collect_hermes_swear_meter(con)
     except sqlite3.Error as exc:
         result["error"] = safe_preview(exc)
     finally:
@@ -273,9 +449,45 @@ def collect_hermes_state(db: Path) -> dict[str, Any]:
     return result
 
 
+def _collect_hermes_swear_meter(con: sqlite3.Connection) -> dict[str, Any]:
+    summary = empty_swear_meter()
+    try:
+        rows = query_rows(
+            con,
+            "select m.content as content, m.timestamp as message_ts, s.started_at as session_started "
+            "from messages m "
+            "left join sessions s on s.id = m.session_id "
+            "where lower(coalesce(m.role,'')) = 'user' and m.content is not null and m.content != ''",
+        )
+    except sqlite3.Error:
+        return finalize_swear_meter(summary)
+
+    for row in rows:
+        content = str(row.get("content") or "")
+        raw_ts = row.get("message_ts") or row.get("session_started")
+        timestamp = timestamp_to_iso(raw_ts) or str(raw_ts or "")
+        item = analyze_user_message(content, timestamp)
+        summary["directUserMessages"] += int(item.get("directUserMessages") or 0)
+        summary["swearIndexMessages"] += int(item.get("swearIndexMessages") or 0)
+        summary["swearIndexOccurrences"] += int(item.get("swearIndexOccurrences") or 0)
+        summary["swearIndexScore"] += int(item.get("swearIndexScore") or 0)
+        summary["groups"].update(item.get("groups") or {})
+        summary["categories"].update(item.get("categories") or {})
+        summary["categoryMessages"].update(item.get("categoryMessages") or {})
+        summary["categoryScores"].update(item.get("categoryScores") or {})
+        summary["terms"].update(item.get("terms") or {})
+        summary["termOccurrences"].update(item.get("termOccurrences") or {})
+        summary["timeline"].update(item.get("timeline") or {})
+    return finalize_swear_meter(summary)
+
+
 def collect_hermes_kanban(db: Path) -> dict[str, Any]:
     result: dict[str, Any] = {"database": file_info(db), "available": False}
     if not db.exists():
+        return result
+    if _is_dataless(db):
+        result["skipped"] = True
+        result["error"] = "SQLite file is a dataless local placeholder"
         return result
     try:
         con = open_sqlite_readonly(db)
@@ -321,8 +533,9 @@ def collect_hermes_session_files(root: Path) -> dict[str, Any]:
     return files
 
 
-def _local_hermes_roots(home: Path) -> list[Path]:
+def _local_hermes_roots(home: Path, *, extra_roots: list[Path] | None = None) -> list[Path]:
     candidates = _env_paths("THE_LEDGER_HERMES_ROOTS")
+    candidates.extend(extra_roots or [])
     candidates.extend(
         [
             home / ".hermes",
@@ -331,14 +544,16 @@ def _local_hermes_roots(home: Path) -> list[Path]:
             home / "Desktop" / "brain-spa" / "runtime" / "hermes" / "chipmunk",
         ]
     )
+    candidates.extend(_hermes_profile_roots(home / ".hermes"))
     for root in _bounded_roots(home):
+        candidates.extend(_targeted_hermes_roots(root))
         candidates.extend(_find_hermes_state_roots(root, max_depth=7, limit=20))
     result = []
     seen: set[str] = set()
     for path in candidates:
         resolved = _safe_resolve(path)
         key = str(resolved).lower()
-        if key in seen or not resolved.exists():
+        if key in seen or not resolved.exists() or _is_dataless(resolved):
             continue
         seen.add(key)
         result.append(resolved)
@@ -346,7 +561,73 @@ def _local_hermes_roots(home: Path) -> list[Path]:
     return result
 
 
+def _hermes_profile_roots(root: Path) -> list[Path]:
+    profiles = root / "profiles"
+    if not profiles.exists():
+        return []
+    try:
+        return [path for path in profiles.iterdir() if path.is_dir()]
+    except OSError:
+        return []
+
+
+def _targeted_hermes_roots(root: Path) -> list[Path]:
+    candidates = [
+        root / ".hermes",
+        root / "hermes" / ".hermes",
+        root / "runtime" / "hermes",
+        root / "hermes" / "runtime",
+        root / "hermes" / "runtime" / "hermes",
+        root / "runtime",
+    ]
+    found: list[Path] = []
+    for candidate in candidates:
+        found.extend(_direct_hermes_state_roots(candidate))
+    try:
+        children = [path for path in root.iterdir() if path.is_dir() and not _is_dataless(path)]
+    except OSError:
+        children = []
+    for child in children:
+        if child.name in {".git", "node_modules", "__pycache__", ".pytest_cache", "oss-inspection"}:
+            continue
+        for candidate in (
+            child / ".hermes",
+            child / "hermes" / ".hermes",
+            child / "runtime" / "hermes",
+            child / "hermes" / "runtime",
+            child / "hermes" / "runtime" / "hermes",
+        ):
+            found.extend(_direct_hermes_state_roots(candidate))
+    return found
+
+
+def _direct_hermes_state_roots(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    if _looks_like_hermes_state_root(root):
+        return [root]
+    found: list[Path] = []
+    try:
+        children = [path for path in root.iterdir() if path.is_dir()]
+    except OSError:
+        return []
+    for child in children:
+        if child.name in {".git", "node_modules", "__pycache__", ".pytest_cache", "oss-inspection", "state-snapshots"}:
+            continue
+        if _looks_like_hermes_state_root(child):
+            found.append(child)
+        elif child.name in {"profiles", "runtime", "hermes"}:
+            found.extend(_direct_hermes_state_roots(child))
+    return found
+
+
+def _looks_like_hermes_state_root(path: Path) -> bool:
+    return (path / "state.db").exists() or (path / "gateway_state.json").exists() or (path / "auth.json").exists()
+
+
 def _find_hermes_state_roots(root: Path, *, max_depth: int, limit: int) -> list[Path]:
+    if not _allow_broad_scan(root):
+        return []
     found = []
     skip = {".git", "node_modules", "__pycache__", ".pytest_cache", "oss-inspection"}
     visited = 0
@@ -355,7 +636,7 @@ def _find_hermes_state_roots(root: Path, *, max_depth: int, limit: int) -> list[
         if visited > 4000:
             break
         current_path = Path(current)
-        dirs[:] = [item for item in dirs if item not in skip]
+        dirs[:] = [item for item in dirs if item not in skip and not _is_dataless(current_path / item)]
         if _depth_from(root, current_path) > max_depth:
             dirs[:] = []
             continue
@@ -375,38 +656,15 @@ def _bounded_roots(home: Path) -> list[Path]:
 
 
 def _safe_structured_keys(path: Path) -> dict[str, Any]:
-    info = file_info(path)
-    if not path.exists() or path.is_dir():
-        return info
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return {**info, "error": safe_preview(exc)}
-    if path.suffix.lower() == ".json":
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as exc:
-            return {**info, "error": safe_preview(exc)}
-        if isinstance(data, dict):
-            return {**info, "keys": sorted(map(str, data.keys()))[:80]}
-        if isinstance(data, list):
-            return {**info, "type": "list", "items": len(data)}
-        return {**info, "type": type(data).__name__}
-    keys = []
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or ":" not in line:
-            continue
-        key = line.split(":", 1)[0].strip()
-        if key:
-            keys.append(key)
-    return {**info, "keys": keys[:80]}
+    return file_info(path)
 
 
 def _session_row(row: dict[str, Any]) -> dict[str, Any]:
     input_tokens = int(row.get("input_tokens") or 0)
     output_tokens = int(row.get("output_tokens") or 0)
     reasoning_tokens = int(row.get("reasoning_tokens") or 0)
+    cache_read_tokens = int(row.get("cache_read_tokens") or 0)
+    cache_write_tokens = int(row.get("cache_write_tokens") or 0)
     return {
         "id": row.get("id"),
         "title": row.get("title") or "[untitled]",
@@ -418,8 +676,17 @@ def _session_row(row: dict[str, Any]) -> dict[str, Any]:
         "messages": int(row.get("message_count") or 0),
         "toolCalls": int(row.get("tool_call_count") or 0),
         "tokens": input_tokens + output_tokens + reasoning_tokens,
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "reasoningTokens": reasoning_tokens,
+        "cacheReadTokens": cache_read_tokens,
+        "cacheWriteTokens": cache_write_tokens,
+        "billingProvider": row.get("billing_provider"),
+        "billingMode": row.get("billing_mode"),
         "estimatedCostUsd": row.get("estimated_cost_usd"),
+        "actualCostUsd": row.get("actual_cost_usd"),
         "costStatus": row.get("cost_status"),
+        "costSource": row.get("cost_source"),
     }
 
 
@@ -465,3 +732,23 @@ def _safe_resolve(path: Path) -> Path:
         return path.expanduser().resolve()
     except OSError:
         return path.expanduser()
+
+
+def _allow_broad_scan(root: Path) -> bool:
+    if os.environ.get("THE_LEDGER_BROAD_SCAN") == "1":
+        return True
+    try:
+        resolved = _safe_resolve(root)
+        base = _safe_resolve(default_home())
+    except OSError:
+        return False
+    broad_names = {"Desktop", "Documents", "Downloads", "Developer", "dev", "code", "projects", "source"}
+    return not (resolved.parent == base and resolved.name in broad_names)
+
+
+def _is_dataless(path: Path) -> bool:
+    try:
+        flags = getattr(path.stat(), "st_flags", 0)
+    except OSError:
+        return False
+    return bool(flags & MACOS_DATALESS_FLAG)

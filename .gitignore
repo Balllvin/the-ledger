@@ -12,3 +12,4 @@ htmlcov/
 auth.json
 .codex/
 tmp/
+.ledger-cache/

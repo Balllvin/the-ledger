@@ -28,8 +28,8 @@ Read these files before changing behavior:
 
 ## Implementation Direction
 
-1. Start the server locally and verify `/healthz`.
-2. Open the dashboard at `http://127.0.0.1:5177`.
+1. For a normal open request, run `bin/ledger` from the repository root in a long-running terminal session, verify `/healthz`, and open the printed URL.
+2. Prefer `bin/ledger` over hand-written Python commands; it sets the bounded scan roots, avoids bytecode churn, reuses an existing healthy server, and starts the server reliably for agent workflows.
 3. If no Codex records appear, follow [docs/DISCOVERY.md](docs/DISCOVERY.md) to find the local Codex root.
 4. Set `CODEX_HOME` or `THE_LEDGER_SCAN_ROOTS` only when discovery needs help.
 5. Keep UI changes simple: three pages, clear header switching, one primary chart, compact source health.
