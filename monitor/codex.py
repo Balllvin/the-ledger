@@ -27,6 +27,8 @@ TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning
 MAX_FULL_SESSION_BYTES = 2_000_000
 SESSION_TAIL_BYTES = 256_000
 MAX_PARSED_SESSION_FILES = 450
+MAX_SWEAR_CANDIDATE_LINE_BYTES = 1_000_000
+SESSION_CACHE_VERSION = 2
 SWEAR_CANDIDATE_MARKERS = (
     b"session_meta",
     b"user_message",
@@ -47,6 +49,7 @@ def add_token_totals(target: dict[str, int], usage: dict[str, Any] | None) -> No
         try:
             target[key] += int(usage.get(key) or 0)
         except (TypeError, ValueError):
+            target["invalidTokenFields"] = int(target.get("invalidTokenFields") or 0) + 1
             continue
 
 
@@ -71,6 +74,7 @@ def _base_session(path: Path, *, archive: str, root: Path | None = None, file_st
         "webSearches": 0,
         "images": 0,
         "userMessages": 0,
+        "modelInputUserItems": 0,
         "assistantMessages": 0,
         "contextWindows": Counter(),
         "latestTokenUsage": _empty_token_totals(),
@@ -150,6 +154,9 @@ def scan_session_swear_meter(path: Path, *, archive: str, root: Path | None = No
 
 def _apply_swear_candidate_line(session: dict[str, Any], raw_line: bytes) -> None:
     if not raw_line.strip():
+        return
+    if len(raw_line) > MAX_SWEAR_CANDIDATE_LINE_BYTES:
+        session["eventCounts"]["[oversized_swear_candidate]"] += 1
         return
     if not any(marker in raw_line for marker in SWEAR_CANDIDATE_MARKERS):
         return
@@ -235,8 +242,7 @@ def _apply_session_line(session: dict[str, Any], raw_line: str) -> None:
         if name and payload_type in {"function_call", "custom_tool_call", "mcp_tool_call"}:
             session["tools"][str(name)] += 1
         if payload.get("role") == "user":
-            session["userMessages"] += 1
-            _apply_user_message_for_swear_meter(session, _content_to_text(payload.get("content")), timestamp)
+            session["modelInputUserItems"] += 1
         if payload.get("role") == "assistant":
             session["assistantMessages"] += 1
 
@@ -284,31 +290,48 @@ def _id_from_rollout_name(name: str) -> str:
     return stem
 
 
-def collect_sessions(codex_root: Path) -> dict[str, Any]:
+def collect_sessions(codex_root: Path, *, cache_dir: Path | None = None, refresh_after_day: str | None = None) -> dict[str, Any]:
     roots = [
         ("active", codex_root / "sessions"),
         ("archived", codex_root / "archived_sessions"),
     ]
+    session_cache = _load_session_cache(cache_dir)
+    cache_entries = session_cache.setdefault("entries", {})
+    cache_stats = {
+        "enabled": cache_dir is not None,
+        "hits": 0,
+        "misses": 0,
+        "refreshed": 0,
+        "entries": 0,
+    }
+    if session_cache.get("error"):
+        cache_stats["error"] = session_cache["error"]
+    seen_cache_keys: set[str] = set()
+    cache_dirty = False
     all_sessions: list[dict[str, Any]] = []
     totals = _empty_token_totals()
     by_archive: Counter[str] = Counter()
     by_day: defaultdict[str, dict[str, int]] = defaultdict(lambda: {"sessions": 0, "tokens": 0})
     tools: Counter[str] = Counter()
     models: Counter[str] = Counter()
+    tokens_by_model: dict[str, dict[str, int]] = defaultdict(_empty_token_totals)
     payload_types: Counter[str] = Counter()
     event_types: Counter[str] = Counter()
     failed_commands = 0
     command_count = 0
+    model_input_user_items = 0
     bytes_total = 0
     parsed_files = 0
     skipped_files = 0
+    session_errors = 0
     swear_meter = empty_swear_meter()
     swear_by_thread: dict[str, dict[str, Any]] = {}
+    swear_by_origin: dict[str, dict[str, Any]] = {}
 
     for archive, root in roots:
         if not root.exists():
             continue
-        entries: list[tuple[float, int, Path]] = []
+        entries: list[tuple[float, int, int, Path]] = []
         for path in root.rglob("*.jsonl"):
             try:
                 stat = path.stat()
@@ -322,31 +345,47 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
                     }
                 )
                 continue
-            entries.append((stat.st_mtime, stat.st_size, path))
+            entries.append((stat.st_mtime, stat.st_size, stat.st_mtime_ns, path))
         entries.sort(key=lambda item: item[0], reverse=True)
-        for index, (_, size, path) in enumerate(entries):
-            try:
-                if index >= MAX_PARSED_SESSION_FILES:
-                    session = scan_session_swear_meter(path, archive=archive, root=codex_root)
-                    session["skipped"] = True
-                    skipped_files += 1
-                elif size > MAX_FULL_SESSION_BYTES:
-                    session = scan_session_file_fast(path, archive=archive, root=codex_root)
-                    parsed_files += 1
+        for index, (modified, size, modified_ns, path) in enumerate(entries):
+            stat_info = {"size": int(size), "mtime": float(modified), "mtimeNs": int(modified_ns)}
+            cached = _cached_session(cache_entries, path, archive=archive, root=codex_root, stat_info=stat_info)
+            cache_key = _session_cache_key(path)
+            seen_cache_keys.add(cache_key)
+            if cached is not None and not _should_refresh_cached_session(cached, refresh_after_day):
+                session = deepcopy(cached)
+                session["fromCache"] = True
+                cache_stats["hits"] += 1
+            else:
+                if cached is not None:
+                    cache_stats["refreshed"] += 1
                 else:
-                    session = scan_session_file(path, archive=archive, root=codex_root)
-                    parsed_files += 1
-            except OSError as exc:
-                all_sessions.append(
-                    {
-                        "id": _id_from_rollout_name(path.name),
+                    cache_stats["misses"] += 1
+                session = None
+            if session is None:
+                session = _scan_session_entry(path, archive=archive, root=codex_root, index=index, size=size)
+                if isinstance(session, dict) and not session.get("error"):
+                    cache_entries[cache_key] = {
+                        "version": SESSION_CACHE_VERSION,
                         "archive": archive,
-                        "path": safe_relpath(path, codex_root),
-                        "error": safe_preview(exc),
+                        "root": str(codex_root),
+                        "path": str(path),
+                        "size": int(size),
+                        "mtime": float(modified),
+                        "mtimeNs": int(modified_ns),
+                        "session": session,
                     }
-                )
-                continue
+                    cache_dirty = True
+                if session.get("skipped"):
+                    skipped_files += 1
+                elif session.get("partial") or not session.get("error"):
+                    parsed_files += 1
+            else:
+                if session.get("skipped"):
+                    skipped_files += 1
             all_sessions.append(session)
+            if session.get("error"):
+                session_errors += 1
             by_archive[archive] += 1
             bytes_total += int(session.get("bytes") or 0)
             add_token_totals(totals, session.get("latestTokenUsage"))
@@ -354,22 +393,38 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
                 tools[name] += int(count)
             for name, count in (session.get("models") or {}).items():
                 models[name] += int(count)
+            primary_model = _primary_session_model(session)
+            add_token_totals(tokens_by_model[primary_model], session.get("latestTokenUsage"))
             for name, count in (session.get("payloadTypes") or {}).items():
                 payload_types[name] += int(count)
             for name, count in (session.get("eventCounts") or {}).items():
                 event_types[name] += int(count)
             session_swear_meter = _swear_meter_from_finalized(session.get("swearMeter") or {})
             merge_swear_meter(swear_meter, session_swear_meter)
+            origin_meter = swear_by_origin.setdefault(_session_origin(session), empty_swear_meter())
+            merge_swear_meter(origin_meter, session_swear_meter)
             session_id = session.get("id")
             if session_id:
                 thread_meter = swear_by_thread.setdefault(str(session_id), empty_swear_meter())
                 merge_swear_meter(thread_meter, session_swear_meter)
             failed_commands += int(session.get("commandFailures") or 0)
             command_count += int(session.get("commands") or 0)
+            model_input_user_items += int(session.get("modelInputUserItems") or 0)
             day = str(session.get("firstTimestamp") or session.get("modified") or "")[:10]
             if day:
                 by_day[day]["sessions"] += 1
                 by_day[day]["tokens"] += int((session.get("latestTokenUsage") or {}).get("total_tokens") or 0)
+
+    if cache_dir is not None:
+        stale_keys = [key for key in list(cache_entries.keys()) if key not in seen_cache_keys]
+        if stale_keys:
+            for key in stale_keys:
+                cache_entries.pop(key, None)
+            cache_dirty = True
+        cache_stats["entries"] = len(cache_entries)
+        save_error = _save_session_cache(cache_dir, session_cache) if cache_dirty else None
+        if save_error:
+            cache_stats["saveError"] = save_error
 
     all_sessions.sort(key=lambda item: str(item.get("lastTimestamp") or item.get("modified") or ""), reverse=True)
     return {
@@ -377,20 +432,121 @@ def collect_sessions(codex_root: Path) -> dict[str, Any]:
         "bytes": bytes_total,
         "byArchive": dict(by_archive),
         "tokenTotals": totals,
+        "tokenTotalsByModel": dict(sorted(tokens_by_model.items(), key=lambda item: int(item[1].get("total_tokens") or 0), reverse=True)),
         "commands": command_count,
         "commandFailures": failed_commands,
+        "modelInputUserItems": model_input_user_items,
         "tools": dict(tools.most_common(30)),
         "models": dict(models.most_common(20)),
         "payloadTypes": dict(payload_types.most_common(30)),
         "eventTypes": dict(event_types.most_common(20)),
         "parsedFiles": parsed_files,
         "skippedFiles": skipped_files,
+        "errors": session_errors,
+        "cache": cache_stats,
         "swearMeter": finalize_swear_meter(swear_meter),
         "swearByThread": {thread_id: finalize_swear_meter(meter) for thread_id, meter in swear_by_thread.items()},
+        "swearByOrigin": {origin: finalize_swear_meter(meter) for origin, meter in sorted(swear_by_origin.items())},
+        "projects": _collect_session_project_usage(all_sessions),
         "timeline": [{"day": day, **values} for day, values in sorted(by_day.items())],
         "recent": _compact_sessions(all_sessions[:80]),
         "topByTokens": _compact_sessions(sorted(all_sessions, key=lambda item: int((item.get("latestTokenUsage") or {}).get("total_tokens") or 0), reverse=True)[:25]),
     }
+
+
+def _scan_session_entry(path: Path, *, archive: str, root: Path, index: int, size: int) -> dict[str, Any]:
+    try:
+        if index >= MAX_PARSED_SESSION_FILES:
+            session = scan_session_swear_meter(path, archive=archive, root=root)
+            session["skipped"] = True
+            return session
+        if size > MAX_FULL_SESSION_BYTES:
+            return scan_session_file_fast(path, archive=archive, root=root)
+        return scan_session_file(path, archive=archive, root=root)
+    except OSError as exc:
+        return {
+            "id": _id_from_rollout_name(path.name),
+            "archive": archive,
+            "path": safe_relpath(path, root),
+            "error": safe_preview(exc),
+        }
+
+
+def _primary_session_model(session: dict[str, Any]) -> str:
+    models = session.get("models") or {}
+    if not isinstance(models, dict) or not models:
+        return "[unknown]"
+    return max(models.items(), key=lambda item: int(item[1] or 0))[0]
+
+
+def _session_cache_file(cache_dir: Path) -> Path:
+    return cache_dir / "codex-sessions.json"
+
+
+def _session_cache_key(path: Path) -> str:
+    return str(path)
+
+
+def _load_session_cache(cache_dir: Path | None) -> dict[str, Any]:
+    if cache_dir is None:
+        return {"version": SESSION_CACHE_VERSION, "entries": {}}
+    path = _session_cache_file(cache_dir)
+    if not path.exists():
+        return {"version": SESSION_CACHE_VERSION, "entries": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"version": SESSION_CACHE_VERSION, "entries": {}, "error": safe_preview(exc)}
+    if not isinstance(data, dict) or data.get("version") != SESSION_CACHE_VERSION or not isinstance(data.get("entries"), dict):
+        return {"version": SESSION_CACHE_VERSION, "entries": {}, "error": "Unsupported session cache schema or version"}
+    return data
+
+
+def _save_session_cache(cache_dir: Path, data: dict[str, Any]) -> str | None:
+    try:
+        cache_dir.mkdir(exist_ok=True)
+        temporary = _session_cache_file(cache_dir).with_suffix(".tmp")
+        temporary.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(_session_cache_file(cache_dir))
+    except OSError as exc:
+        return safe_preview(exc)
+    return None
+
+
+def _cached_session(
+    entries: dict[str, Any],
+    path: Path,
+    *,
+    archive: str,
+    root: Path,
+    stat_info: dict[str, float | int],
+) -> dict[str, Any] | None:
+    entry = entries.get(_session_cache_key(path))
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("version") != SESSION_CACHE_VERSION:
+        return None
+    if entry.get("archive") != archive or entry.get("root") != str(root):
+        return None
+    if int(entry.get("size") or -1) != int(stat_info["size"]):
+        return None
+    if "mtimeNs" in entry:
+        if int(entry.get("mtimeNs") or -1) != int(stat_info["mtimeNs"]):
+            return None
+    elif float(entry.get("mtime") or -1) != float(stat_info["mtime"]):
+        return None
+    session = entry.get("session")
+    return session if isinstance(session, dict) else None
+
+
+def _should_refresh_cached_session(session: dict[str, Any], refresh_after_day: str | None) -> bool:
+    if not refresh_after_day:
+        return False
+    for key in ("lastTimestamp", "modified", "firstTimestamp"):
+        day = str(session.get(key) or "")[:10]
+        if day and day >= refresh_after_day:
+            return True
+    return False
 
 
 def _swear_meter_from_finalized(summary: dict[str, Any]) -> dict[str, Any]:
@@ -434,6 +590,16 @@ def _swear_meter_from_finalized(summary: dict[str, Any]) -> dict[str, Any]:
     return meter
 
 
+def _session_origin(session: dict[str, Any]) -> str:
+    source = str(session.get("source") or "")
+    role = str(session.get("agentRole") or "")
+    if source.startswith("{") or role:
+        return "agent"
+    if source.lower() in {"automation", "cron", "scheduled"}:
+        return "automation"
+    return "human"
+
+
 def _compact_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     compacted = []
     for item in sessions:
@@ -454,15 +620,88 @@ def _compact_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "lineCount": item.get("lineCount"),
                 "partial": item.get("partial"),
                 "skipped": item.get("skipped"),
+                "error": item.get("error"),
                 "tokens": item.get("latestTokenUsage"),
                 "commands": item.get("commands"),
                 "commandFailures": item.get("commandFailures"),
+                "modelInputUserItems": item.get("modelInputUserItems"),
                 "swearMeter": item.get("swearMeter"),
                 "tools": item.get("tools"),
                 "models": item.get("models"),
             }
         )
     return compacted
+
+
+def _collect_session_project_usage(sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    days: set[str] = set()
+    projects: dict[str, dict[str, Any]] = {}
+    total_by_day: defaultdict[str, dict[str, int]] = defaultdict(lambda: {"tokens": 0, "threads": 0})
+
+    for session in sessions:
+        cwd = _normalized_cwd(session.get("cwd"))
+        label = _project_label(cwd)
+        day = str(session.get("firstTimestamp") or session.get("modified") or "")[:10] or "[unknown]"
+        days.add(day)
+        tokens = int((session.get("latestTokenUsage") or {}).get("total_tokens") or 0)
+        project = projects.setdefault(
+            cwd,
+            {
+                "id": _project_id(cwd),
+                "name": label,
+                "cwd": cwd,
+                "tokens": 0,
+                "threads": 0,
+                "days": defaultdict(lambda: {"tokens": 0, "threads": 0}),
+                "recentThreads": [],
+                "topThreads": [],
+            },
+        )
+        project["tokens"] += tokens
+        project["threads"] += 1
+        project["days"][day]["tokens"] += tokens
+        project["days"][day]["threads"] += 1
+        total_by_day[day]["tokens"] += tokens
+        total_by_day[day]["threads"] += 1
+        compact = {
+            "id": session.get("id"),
+            "title": session.get("title") or "[untitled]",
+            "source": _source_label(session.get("source")),
+            "updated": session.get("lastTimestamp") or session.get("modified"),
+            "tokens": tokens,
+        }
+        project["recentThreads"].append(compact)
+        project["topThreads"].append(compact)
+
+    sorted_days = sorted(days)
+    project_list = []
+    for project in projects.values():
+        day_map = project["days"]
+        project["days"] = [
+            {
+                "day": day,
+                "tokens": int(day_map[day]["tokens"]),
+                "threads": int(day_map[day]["threads"]),
+            }
+            for day in sorted_days
+        ]
+        project["recentThreads"] = sorted(project["recentThreads"], key=lambda item: str(item.get("updated") or ""), reverse=True)[:20]
+        project["topThreads"] = sorted(project["topThreads"], key=lambda item: int(item.get("tokens") or 0), reverse=True)[:20]
+        project_list.append(project)
+
+    project_list.sort(key=lambda item: int(item.get("tokens") or 0), reverse=True)
+    return {
+        "days": sorted_days,
+        "total": [
+            {
+                "day": day,
+                "tokens": int(total_by_day[day]["tokens"]),
+                "threads": int(total_by_day[day]["threads"]),
+            }
+            for day in sorted_days
+        ],
+        "projects": project_list,
+    }
 
 
 def collect_state(codex_root: Path) -> dict[str, Any]:
@@ -748,14 +987,17 @@ def collect_filesystem(codex_root: Path) -> dict[str, Any]:
     auth_info["redacted"] = True
 
     index_count = 0
+    index_error = None
     if session_index.exists():
         try:
             with session_index.open("r", encoding="utf-8", errors="replace") as handle:
                 index_count = sum(1 for line in handle if line.strip())
-        except OSError:
+        except OSError as exc:
             index_count = 0
+            index_error = safe_preview(exc)
 
     model_count = None
+    model_error = None
     if models_cache.exists():
         try:
             with models_cache.open("r", encoding="utf-8", errors="replace") as handle:
@@ -764,8 +1006,9 @@ def collect_filesystem(codex_root: Path) -> dict[str, Any]:
                 model_count = len(data)
             elif isinstance(data, dict):
                 model_count = len(data.get("models") or data)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError) as exc:
             model_count = None
+            model_error = safe_preview(exc)
 
     return {
         "root": file_info(codex_root),
@@ -779,6 +1022,8 @@ def collect_filesystem(codex_root: Path) -> dict[str, Any]:
         "automations": count_files(codex_root / "automations", patterns=("*",)),
         "cache": count_files(codex_root / "cache", patterns=("*",), skip_parts={"node_modules", ".git"}),
         "sqlite": count_files(codex_root / "sqlite", patterns=("*",)),
+        "sessionIndexError": index_error,
+        "modelCacheError": model_error,
     }
 
 
@@ -883,7 +1128,12 @@ def _desktop_app_support_roots(home: Path) -> list[Path]:
     return candidates
 
 
-def collect_codex(home: Path | None = None) -> dict[str, Any]:
+def collect_codex(
+    home: Path | None = None,
+    *,
+    session_cache_dir: Path | None = None,
+    refresh_after_day: str | None = None,
+) -> dict[str, Any]:
     base = home or default_home()
     codex_root = base if (base / "state_5.sqlite").exists() or (base / "auth.json").exists() else base / ".codex"
     result: dict[str, Any] = {
@@ -895,7 +1145,7 @@ def collect_codex(home: Path | None = None) -> dict[str, Any]:
     result["filesystem"] = collect_filesystem(codex_root)
     result["state"] = collect_state(codex_root)
     result["logs"] = collect_logs(codex_root)
-    result["sessions"] = collect_sessions(codex_root)
+    result["sessions"] = collect_sessions(codex_root, cache_dir=session_cache_dir, refresh_after_day=refresh_after_day)
     result["appDatabase"] = collect_app_database(codex_root)
     result["desktopApp"] = collect_desktop_app_support(default_home())
     result = sanitize(result, max_depth=10)

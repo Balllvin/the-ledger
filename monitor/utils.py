@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+MACOS_DATALESS_FLAG = 0x40000000
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -54,7 +56,7 @@ def file_info(path: Path) -> dict[str, Any]:
     return info
 
 
-def count_files(root: Path, *, patterns: Iterable[str] = ("*",), skip_parts: set[str] | None = None) -> dict[str, Any]:
+def count_files(root: Path, *, patterns: Iterable[str] = ("*",), skip_parts: set[str] | None = None, max_files: int = 10000) -> dict[str, Any]:
     if not root.exists():
         return {"path": path_for_display(root), "exists": False, "files": 0, "bytes": 0}
     skip_parts = skip_parts or set()
@@ -64,9 +66,13 @@ def count_files(root: Path, *, patterns: Iterable[str] = ("*",), skip_parts: set
     latest: list[tuple[float, Path, int]] = []
     for pattern in patterns:
         for item in root.rglob(pattern):
+            if total_files >= max_files:
+                break
             if not item.is_file():
                 continue
             if skip_parts and any(part in skip_parts for part in item.parts):
+                continue
+            if is_dataless(item):
                 continue
             try:
                 stat = item.stat()
@@ -82,6 +88,7 @@ def count_files(root: Path, *, patterns: Iterable[str] = ("*",), skip_parts: set
         "exists": True,
         "files": total_files,
         "bytes": total_bytes,
+        "truncated": total_files >= max_files,
         "bySuffix": dict(by_suffix.most_common(20)),
         "latest": [
             {
@@ -96,7 +103,9 @@ def count_files(root: Path, *, patterns: Iterable[str] = ("*",), skip_parts: set
 
 def open_sqlite_readonly(path: Path) -> sqlite3.Connection:
     uri = f"file:{path.as_posix()}?mode=ro"
-    con = sqlite3.connect(uri, uri=True)
+    con = sqlite3.connect(uri, uri=True, timeout=1.0)
+    con.execute("pragma query_only = on")
+    con.execute("pragma busy_timeout = 1000")
     con.row_factory = sqlite3.Row
     return con
 
@@ -131,3 +140,11 @@ def default_home() -> Path:
 def desktop_root(home: Path | None = None) -> Path:
     base = home or default_home()
     return base / "Desktop"
+
+
+def is_dataless(path: Path) -> bool:
+    try:
+        flags = getattr(path.stat(), "st_flags", 0)
+    except OSError:
+        return False
+    return bool(flags & MACOS_DATALESS_FLAG)

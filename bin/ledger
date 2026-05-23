@@ -1,0 +1,46 @@
+#!/usr/bin/env sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+HOST="${THE_LEDGER_HOST:-127.0.0.1}"
+PORT="${THE_LEDGER_PORT:-5177}"
+URL="http://${HOST}:${PORT}/"
+LOG_DIR="${ROOT}/tmp"
+LOG_FILE="${LOG_DIR}/the-ledger-server.log"
+
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON="${PYTHON:-python3}"
+else
+  PYTHON="${PYTHON:-python}"
+fi
+
+if command -v curl >/dev/null 2>&1 && curl -fsS -m 2 "${URL}healthz" >/dev/null 2>&1; then
+  printf '%s\n' "${URL}"
+  exit 0
+fi
+
+DEFAULT_SCAN_ROOTS="${HOME}/Desktop:${HOME}/.codex:${HOME}/.hermes:${HOME}/.local/state/hermes"
+export THE_LEDGER_SCAN_ROOTS="${THE_LEDGER_SCAN_ROOTS:-$DEFAULT_SCAN_ROOTS}"
+export PYTHONDONTWRITEBYTECODE="${PYTHONDONTWRITEBYTECODE:-1}"
+
+mkdir -p "${LOG_DIR}"
+cd "${ROOT}"
+
+if [ "${THE_LEDGER_BACKGROUND:-0}" != "1" ]; then
+  exec "$PYTHON" -S server.py --host "$HOST" --port "$PORT"
+fi
+
+nohup "$PYTHON" -S server.py --host "$HOST" --port "$PORT" >"${LOG_FILE}" 2>&1 &
+
+tries=0
+while [ "$tries" -lt 60 ]; do
+  if command -v curl >/dev/null 2>&1 && curl -fsS -m 2 "${URL}healthz" >/dev/null 2>&1; then
+    printf '%s\n' "${URL}"
+    exit 0
+  fi
+  tries=$((tries + 1))
+  sleep 0.25
+done
+
+printf 'The Ledger did not become healthy. See %s\n' "$LOG_FILE" >&2
+exit 1

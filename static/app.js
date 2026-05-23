@@ -9,13 +9,27 @@ const utilityBar = document.querySelector(".utility-bar");
 
 let snapshot = null;
 let selectedSeries = new Set(["total"]);
-let activeSystems = new Set(["codex", "opencode"]);
+let activeSystems = new Set(["codex", "opencode", "cursor"]);
 let swearSeriesVisible = new Set();
 let swearLegendInitialized = false;
 let snapshotEvents = null;
+let snapshotPoll = null;
 
 const SERIES_COLORS = ["#151515", "#1f6c9f", "#346538", "#956400", "#9f2f2d", "#5f4b8b", "#7a5b2e", "#3f6f72"];
 const SWEAR_CATEGORY_COLORS = ["#9f2f2d", "#1f6c9f", "#346538", "#956400", "#5f4b8b", "#3f6f72", "#7a5b2e", "#2f3f58", "#8b3f62"];
+const PRICE_DENOMINATOR = 1_000_000;
+const DEFAULT_PRICE_MODEL = "gpt-5.5";
+const MODEL_PRICES = {
+  "gpt-5.5": { label: "GPT-5.5", input: 5, cachedInput: 0.5, output: 30 },
+  "gpt-5.4": { label: "GPT-5.4", input: 2.5, cachedInput: 0.25, output: 15 },
+  "gpt-5.4-mini": { label: "GPT-5.4 mini", input: 0.75, cachedInput: 0.075, output: 4.5 },
+  "gpt-5.3-codex": { label: "GPT-5.3 Codex", input: 1.75, cachedInput: 0.175, output: 14 },
+  "gpt-5-codex": { label: "GPT-5 Codex", input: 1.25, cachedInput: 0.125, output: 10 },
+  "gpt-5": { label: "GPT-5", input: 1.25, cachedInput: 0.125, output: 10 },
+  "deepseek-v4-pro": { label: "DeepSeek V4 Pro", input: 0.435, cachedInput: 0.003625, output: 0.87 },
+  "deepseek-v4-flash": { label: "DeepSeek V4 Flash", input: 0.14, cachedInput: 0.0028, output: 0.28 },
+  o3: { label: "o3", input: 2, cachedInput: 0.5, output: 8 },
+};
 
 function swearCategoryColor(category, categories) {
   const index = Math.max(0, categories.findIndex((item) => item.id === category.id));
@@ -75,6 +89,10 @@ function formatCompact(value) {
   return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0));
 }
 
+function formatCurrency(value) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: Number(value || 0) >= 100 ? 0 : 2 }).format(Number(value || 0));
+}
+
 function formatBytes(value) {
   const number = Number(value || 0);
   if (number < 1024) return `${number} B`;
@@ -115,6 +133,15 @@ function workspaceLabel(project) {
 
 function setHtml(selector, html) {
   document.querySelector(selector).innerHTML = html;
+}
+
+function healthValue(record, availableLabel = "readable", missingLabel = "missing") {
+  if (record?.error) return "error";
+  return record?.available ? availableLabel : missingLabel;
+}
+
+function healthNote(record, fallback = "") {
+  return record?.error || record?.database?.path || record?.root?.path || record?.path || fallback || "";
 }
 
 function emptyHtml(message = "No records found.") {
@@ -192,15 +219,177 @@ function hasSystem(name) {
   return activeSystems.has(name);
 }
 
+function selectedTokenBreakdown(data) {
+  const codexTokens = (((data.codex || {}).sessions || {}).tokenTotals || {});
+  const hermesSessions = (((data.hermes || {}).local || {}).state || {}).sessions || {};
+  const opencodeTokens = (((data.opencode || {}).database || {}).messages || {}).tokens || {};
+  const breakdown = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 };
+  if (hasSystem("codex")) {
+    breakdown.input += Number(codexTokens.input_tokens || 0);
+    breakdown.output += Number(codexTokens.output_tokens || 0);
+    breakdown.reasoning += Number(codexTokens.reasoning_output_tokens || 0);
+    breakdown.cacheRead += Number(codexTokens.cached_input_tokens || 0);
+    breakdown.input += Number(hermesSessions.inputTokens || 0);
+    breakdown.output += Number(hermesSessions.outputTokens || 0);
+    breakdown.reasoning += Number(hermesSessions.reasoningTokens || 0);
+    breakdown.cacheRead += Number(hermesSessions.cacheReadTokens || 0);
+    breakdown.cacheWrite += Number(hermesSessions.cacheWriteTokens || 0);
+  }
+  if (hasSystem("opencode")) {
+    breakdown.input += Number(opencodeTokens.input || 0);
+    breakdown.output += Number(opencodeTokens.output || 0);
+    breakdown.reasoning += Number(opencodeTokens.reasoning || 0);
+    breakdown.cacheRead += Number(opencodeTokens.cacheRead || 0);
+    breakdown.cacheWrite += Number(opencodeTokens.cacheWrite || 0);
+  }
+  breakdown.known = breakdown.input + breakdown.output + breakdown.reasoning;
+  return breakdown;
+}
+
+function canonicalTokenTotals(value) {
+  const tokens = value || {};
+  const input = Number(tokens.input ?? tokens.input_tokens ?? tokens.inputTokens ?? 0);
+  const output = Number(tokens.output ?? tokens.output_tokens ?? tokens.outputTokens ?? 0);
+  const reasoning = Number(tokens.reasoning ?? tokens.reasoning_output_tokens ?? tokens.reasoningTokens ?? 0);
+  const cacheRead = Number(tokens.cacheRead ?? tokens.cached_input_tokens ?? tokens.cacheReadTokens ?? 0);
+  const cacheWrite = Number(tokens.cacheWrite ?? tokens.cacheWriteTokens ?? 0);
+  const total = Number(tokens.total ?? tokens.total_tokens ?? tokens.tokens ?? input + output + reasoning + cacheRead + cacheWrite);
+  return { input, output, reasoning, cacheRead, cacheWrite, total };
+}
+
+function normalizePriceModel(model) {
+  const id = String(model || "").toLowerCase();
+  if (!id || id === "[unknown]") return "";
+  if (id.includes("gpt-5.4-mini")) return "gpt-5.4-mini";
+  if (id.includes("gpt-5.5")) return "gpt-5.5";
+  if (id.includes("gpt-5.4")) return "gpt-5.4";
+  if (id.includes("gpt-5.3-codex")) return "gpt-5.3-codex";
+  if (id.includes("gpt-5-codex")) return "gpt-5-codex";
+  if (id === "o3" || id.startsWith("o3-")) return "o3";
+  if (id.includes("deepseek-v4-pro")) return "deepseek-v4-pro";
+  if (id.includes("deepseek-v4-flash") || id === "deepseek-chat" || id === "deepseek-reasoner") return "deepseek-v4-flash";
+  if (id.includes("gpt-5")) return "gpt-5";
+  return "";
+}
+
+function emptyCostEstimate() {
+  return {
+    inputUsd: 0,
+    outputUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cachedInputTokens: 0,
+    fallbackTokens: 0,
+    fallbackModels: new Set(),
+  };
+}
+
+function addPricedTokens(target, model, tokens, options = {}) {
+  const priceModel = normalizePriceModel(model);
+  const effectiveModel = priceModel || DEFAULT_PRICE_MODEL;
+  const price = MODEL_PRICES[effectiveModel];
+  const cacheIncludedInInput = options.cacheIncludedInInput === true;
+  const cachedInput = Math.max(0, tokens.cacheRead || 0);
+  const uncachedInput = Math.max(0, cacheIncludedInInput ? (tokens.input || 0) - cachedInput : (tokens.input || 0) + (tokens.cacheWrite || 0));
+  const outputTokens = Math.max(0, tokens.output || 0);
+  const reasoningTokens = Math.max(0, tokens.reasoning || 0);
+  target.inputUsd += (uncachedInput * price.input + cachedInput * price.cachedInput) / PRICE_DENOMINATOR;
+  target.outputUsd += ((outputTokens + reasoningTokens) * price.output) / PRICE_DENOMINATOR;
+  target.inputTokens += uncachedInput + cachedInput;
+  target.outputTokens += outputTokens;
+  target.reasoningTokens += reasoningTokens;
+  target.cachedInputTokens += cachedInput;
+  if (!priceModel) {
+    target.fallbackTokens += uncachedInput + cachedInput + outputTokens + reasoningTokens;
+    target.fallbackModels.add(String(model || "[unknown]"));
+  }
+}
+
+function splitTotalsByModel(totalTokens, modelCounts) {
+  const entries = Object.entries(modelCounts || {}).filter(([, count]) => Number(count || 0) > 0);
+  const weightTotal = entries.reduce((total, [, count]) => total + Number(count || 0), 0);
+  if (!weightTotal) return [["[unknown]", totalTokens]];
+  return entries.map(([model, count]) => {
+    const ratio = Number(count || 0) / weightTotal;
+    return [
+      model,
+      {
+        input: totalTokens.input * ratio,
+        output: totalTokens.output * ratio,
+        reasoning: totalTokens.reasoning * ratio,
+        cacheRead: totalTokens.cacheRead * ratio,
+        cacheWrite: totalTokens.cacheWrite * ratio,
+        total: totalTokens.total * ratio,
+      },
+    ];
+  });
+}
+
+function addCodexCost(cost, data) {
+  const sessions = ((data.codex || {}).sessions || {});
+  const byModel = sessions.tokenTotalsByModel || {};
+  const entries = Object.entries(byModel);
+  if (entries.length) {
+    entries.forEach(([model, tokens]) => addPricedTokens(cost, model, canonicalTokenTotals(tokens), { cacheIncludedInInput: true }));
+    return;
+  }
+  const totals = canonicalTokenTotals(sessions.tokenTotals || {});
+  splitTotalsByModel(totals, sessions.models || {}).forEach(([model, tokens]) => addPricedTokens(cost, model, tokens, { cacheIncludedInInput: true }));
+}
+
+function addHermesCost(cost, data) {
+  const state = (((data.hermes || {}).local || {}).state || {});
+  const sessions = state.sessions || {};
+  const totals = canonicalTokenTotals(sessions);
+  const rows = state.byModel || [];
+  if (!rows.length) {
+    addPricedTokens(cost, "[unknown]", totals);
+    return;
+  }
+  const hasSplitTokens = rows.some((row) => Number(row.inputTokens || 0) || Number(row.outputTokens || 0) || Number(row.reasoningTokens || 0) || Number(row.cacheReadTokens || 0));
+  if (hasSplitTokens) {
+    rows.forEach((row) => addPricedTokens(cost, row.model, canonicalTokenTotals(row)));
+    return;
+  }
+  const byModel = Object.fromEntries(rows.map((row) => [row.model || "[unknown]", row.tokens || row.sessions || 0]));
+  splitTotalsByModel(totals, byModel).forEach(([model, tokens]) => addPricedTokens(cost, model, tokens));
+}
+
+function addOpenCodeCost(cost, data) {
+  const database = ((data.opencode || {}).database || {});
+  const byModel = database.tokensByModel || {};
+  const entries = Object.entries(byModel);
+  if (entries.length) {
+    entries.forEach(([model, tokens]) => addPricedTokens(cost, model, canonicalTokenTotals(tokens)));
+    return;
+  }
+  const totals = canonicalTokenTotals(((database.messages || {}).tokens || {}));
+  splitTotalsByModel(totals, database.models || {}).forEach(([model, tokens]) => addPricedTokens(cost, model, tokens));
+}
+
+function selectedCostEstimate(data) {
+  const cost = emptyCostEstimate();
+  if (hasSystem("codex")) {
+    addCodexCost(cost, data);
+    addHermesCost(cost, data);
+  }
+  if (hasSystem("opencode")) addOpenCodeCost(cost, data);
+  return cost;
+}
+
 function selectedOverview(data) {
   const overview = data.overview || {};
-  const codexProjects = (((data.codex || {}).state || {}).projects || {}).projects || [];
+  const codexProjectTotals = codexProjectsData(data);
+  const codexProjects = codexProjectTotals.projects || [];
   const opencodeProjects = (((data.opencode || {}).database || {}).projects || {}).projects || [];
+  const hermesAgentProjects = hermesProjects(data);
+  const cursorSummary = (data.cursor || {}).summary || {};
   const codex = hasSystem("codex")
     ? {
-        tokens: overview.codexStateTokens || 0,
-        runs: overview.codexThreads || 0,
-        projects: codexProjects.length,
+        tokens: Number(overview.codexJsonlTokens || overview.codexStateTokens || 0) + Number(overview.hermesTokens || 0),
+        runs: Number(overview.codexThreads || 0) + Number(overview.hermesSessions || 0),
+        projects: codexProjects.length + hermesAgentProjects.length,
         logs: overview.codexLogRows || 0,
         failures: overview.codexCommandFailures || 0,
         automations: overview.codexAutomations || 0,
@@ -220,16 +409,29 @@ function selectedOverview(data) {
         costUsd: overview.opencodeCostUsd || 0,
       }
     : {};
+  const cursor = hasSystem("cursor")
+    ? {
+        tokens: 0,
+        runs: Number(cursorSummary.generations || 0) + Number(cursorSummary.composers || 0),
+        projects: Number(cursorSummary.workspaces || 0),
+        logs: Number(cursorSummary.logs || 0),
+        failures: 0,
+        automations: 0,
+        automationRuns: 0,
+      }
+    : {};
   return {
-    tokens: Number(codex.tokens || 0) + Number(opencode.tokens || 0),
-    runs: Number(codex.runs || 0) + Number(opencode.runs || 0),
-    projects: Number(codex.projects || 0) + Number(opencode.projects || 0),
-    logs: Number(codex.logs || 0) + Number(opencode.logs || 0),
+    tokens: Number(codex.tokens || 0) + Number(opencode.tokens || 0) + Number(cursor.tokens || 0),
+    runs: Number(codex.runs || 0) + Number(opencode.runs || 0) + Number(cursor.runs || 0),
+    projects: Number(codex.projects || 0) + Number(opencode.projects || 0) + Number(cursor.projects || 0),
+    logs: Number(codex.logs || 0) + Number(opencode.logs || 0) + Number(cursor.logs || 0),
     failures: Number(codex.failures || 0),
     automations: Number(codex.automations || 0),
     automationRuns: Number(codex.automationRuns || 0),
     messages: Number(opencode.messages || 0),
     costUsd: Number(opencode.costUsd || 0),
+    tokenBreakdown: selectedTokenBreakdown(data),
+    costEstimate: selectedCostEstimate(data),
   };
 }
 
@@ -237,18 +439,82 @@ function prefixProject(project, system) {
   return { ...project, id: `${system}:${project.id}`, system };
 }
 
+function basename(path) {
+  const parts = String(path || "").split(/[\\/]+/).filter(Boolean);
+  return parts[parts.length - 1] || String(path || "");
+}
+
+function hermesRootLabel(path) {
+  const name = basename(path);
+  if (!name || name === ".hermes") return "default";
+  return name;
+}
+
+function hermesThread(row) {
+  const updated = row.ended || row.started || "";
+  return {
+    id: row.id,
+    title: row.title || "[untitled]",
+    source: row.source || "Hermes",
+    updated,
+    tokens: row.tokens || 0,
+  };
+}
+
+function hermesProjects(data) {
+  const local = ((data.hermes || {}).local || {});
+  const roots = local.rootsData || [];
+  return roots
+    .map((entry, index) => {
+      const state = entry.state || {};
+      const sessions = state.sessions || {};
+      const rootPath = entry.root?.path || (local.roots || [])[index] || `hermes-agent-${index + 1}`;
+      const input = Number(sessions.inputTokens || 0);
+      const output = Number(sessions.outputTokens || 0);
+      const reasoning = Number(sessions.reasoningTokens || 0);
+      const tokens = input + output + reasoning;
+      const recentThreads = (state.recentSessions || []).map(hermesThread);
+      const topThreads = (state.topSessions || []).map(hermesThread);
+      return {
+        id: `hermes:${rootPath}`,
+        name: `Hermes: ${hermesRootLabel(rootPath)}`,
+        cwd: rootPath,
+        tokens,
+        threads: Number(sessions.total || 0),
+        days: (state.byDay || []).map((row) => ({ day: row.day, tokens: row.tokens, threads: row.sessions })),
+        recentThreads,
+        topThreads,
+        source: "Hermes",
+      };
+    })
+    .filter((project) => project.tokens > 0 || project.threads > 0);
+}
+
+function codexProjectsData(data) {
+  const sessions = ((data.codex || {}).sessions || {});
+  if ((sessions.projects || {}).projects?.length) return sessions.projects;
+  return (((data.codex || {}).state || {}).projects || {});
+}
+
 function projectData(data) {
-  const projects = ((data.codex || {}).state || {}).projects || {};
+  const projects = codexProjectsData(data);
   const opencodeProjects = (((data.opencode || {}).database || {}).projects || {});
   const result = [];
-  if (hasSystem("codex")) result.push(...(projects.projects || []).map((project) => prefixProject(project, "codex")));
+  if (hasSystem("codex")) {
+    result.push(...(projects.projects || []).map((project) => prefixProject(project, "codex")));
+    result.push(...hermesProjects(data).map((project) => prefixProject(project, "codex")));
+  }
   if (hasSystem("opencode")) result.push(...(opencodeProjects.projects || []).map((project) => prefixProject(project, "opencode")));
   return result.sort((a, b) => Number(b.tokens || 0) - Number(a.tokens || 0));
 }
 
 function mergedTotalDays(data) {
   const totals = [];
-  if (hasSystem("codex")) totals.push(...((((data.codex || {}).state || {}).projects || {}).total || []));
+  if (hasSystem("codex")) totals.push(...((codexProjectsData(data) || {}).total || []));
+  if (hasSystem("codex")) {
+    const byDay = ((((data.hermes || {}).local || {}).state || {}).byDay || []);
+    totals.push(...byDay.map((row) => ({ day: row.day, tokens: row.tokens, threads: row.sessions })));
+  }
   if (hasSystem("opencode")) totals.push(...(((((data.opencode || {}).database || {}).projects || {}).total) || []));
   const byDay = new Map();
   for (const point of totals) {
@@ -268,11 +534,24 @@ function seriesData(data) {
   const projects = projectData(data);
   const totals = selectedOverview(data);
   const total = { id: "total", name: "Total", cwd: "Selected sources", tokens: totals.tokens, threads: totals.runs, days: mergedTotalDays(data) };
-  return [total, ...projects].slice(0, 9);
+  const agents = projects.filter((project) => project.source === "Hermes");
+  const regularProjects = projects.filter((project) => project.source !== "Hermes");
+  const selected = [];
+  for (const project of regularProjects.slice(0, 6)) selected.push(project);
+  for (const agent of agents.slice(0, 4)) {
+    if (!selected.some((project) => project.id === agent.id)) selected.push(agent);
+  }
+  for (const project of projects) {
+    if (selected.length >= 12) break;
+    if (!selected.some((item) => item.id === project.id)) selected.push(project);
+  }
+  return [total, ...selected];
 }
 
 function renderLineChart(selector, series, days) {
   const container = document.querySelector(selector);
+  container.onmousemove = null;
+  container.onmouseleave = null;
   if (!series.length || !days.length) {
     container.innerHTML = emptyHtml();
     return;
@@ -389,8 +668,8 @@ function renderLineChart(selector, series, days) {
     activeGuide.classList.remove("visible");
     pointGroups.forEach((group) => group.classList.remove("active"));
   };
-  container.addEventListener("mousemove", showColumnTooltip);
-  container.addEventListener("mouseleave", hideTooltip);
+  container.onmousemove = showColumnTooltip;
+  container.onmouseleave = hideTooltip;
   container.querySelectorAll(".chart-hit-point").forEach((point) => {
     point.addEventListener("focus", (event) => showTooltip(event, escapeHtml(event.currentTarget.dataset.tooltip)));
     point.addEventListener("blur", hideTooltip);
@@ -399,6 +678,8 @@ function renderLineChart(selector, series, days) {
 
 function renderSwearMeterChart(selector, meter) {
   const container = document.querySelector(selector);
+  container.onmousemove = null;
+  container.onmouseleave = null;
   const timeline = meter.timeline || [];
   const categories = meter.categories || [];
   const rows = [...(timeline || [])].filter((row) => row.day).sort((a, b) => String(a.day).localeCompare(String(b.day)));
@@ -517,7 +798,7 @@ function renderSwearMeterChart(selector, meter) {
     tooltip.style.left = `${left}px`;
     tooltip.style.top = `${top}px`;
   };
-  container.addEventListener("mousemove", (event) => {
+  const showColumnTooltip = (event) => {
     const svg = container.querySelector("svg");
     const rect = svg.getBoundingClientRect();
     const svgX = ((event.clientX - rect.left) / rect.width) * width;
@@ -535,8 +816,9 @@ function renderSwearMeterChart(selector, meter) {
       return;
     }
     showTooltip(event, nearest.item);
-  });
-  container.addEventListener("mouseleave", hideTooltip);
+  };
+  container.onmousemove = showColumnTooltip;
+  container.onmouseleave = hideTooltip;
   pointGroups.forEach((group) => {
     group.querySelector(".chart-hit-point").addEventListener("focus", (event) => {
       const item = dayXs.find((day) => day.day === group.dataset.day);
@@ -548,10 +830,17 @@ function renderSwearMeterChart(selector, meter) {
 
 function renderUsagePage(data) {
   const overview = selectedOverview(data);
+  const tokenBreakdown = overview.tokenBreakdown || {};
+  const costEstimate = overview.costEstimate || emptyCostEstimate();
+  const fallbackNote = costEstimate.fallbackTokens ? `, ${formatCompact(costEstimate.fallbackTokens)} fallback` : "";
   setHtml(
     "#overview-grid",
     [
       metric("Total tokens", formatCompact(overview.tokens), `${formatNumber(overview.runs)} sessions`),
+      metric("Input tokens", formatCompact(tokenBreakdown.input), `${formatCompact(tokenBreakdown.cacheRead)} cached`),
+      metric("Output tokens", formatCompact(tokenBreakdown.output), `${formatCompact(tokenBreakdown.reasoning)} reasoning`),
+      metric("Input cost", formatCurrency(costEstimate.inputUsd), `${formatCompact(costEstimate.inputTokens)} billable${fallbackNote}`),
+      metric("Output cost", formatCurrency(costEstimate.outputUsd), `${formatCompact(costEstimate.outputTokens + costEstimate.reasoningTokens)} output + reasoning`),
       metric("Projects", formatNumber(overview.projects), "Selected workspaces"),
       metric("Automations", formatCompact(overview.automations), `${formatCompact(overview.automationRuns)} Codex runs`),
       metric("Logs", formatCompact(overview.logs), `${formatNumber(overview.failures)} command failures`),
@@ -594,11 +883,53 @@ function renderUsagePage(data) {
   });
 }
 
+function combinedSwearMeter(data) {
+  const codexSessions = ((data.codex || {}).sessions || {});
+  const codexMeter = (codexSessions.swearByOrigin || {}).human || codexSessions.swearMeter || {};
+  const hermesMeter = (((((data.hermes || {}).local || {}).state || {}).swearMeter) || {});
+  if (!hasSystem("codex")) return {};
+  const categories = new Map();
+  for (const category of [...(codexMeter.categories || []), ...(hermesMeter.categories || [])]) {
+    const id = category.id;
+    const existing = categories.get(id) || { ...category, messages: 0, occurrences: 0, score: 0 };
+    existing.messages += Number(category.messages || 0);
+    existing.occurrences += Number(category.occurrences || 0);
+    existing.score += Number(category.score || 0);
+    categories.set(id, existing);
+  }
+  const timelineByDay = new Map();
+  for (const point of [...(codexMeter.timeline || []), ...(hermesMeter.timeline || [])]) {
+    const day = point.day;
+    const existing = timelineByDay.get(day) || { day, messages: 0, swearMessages: 0, categories: {}, categorySets: [] };
+    existing.messages += Number(point.messages || 0);
+    existing.swearMessages += Number(point.swearMessages || 0);
+    for (const [key, value] of Object.entries(point.categories || {})) {
+      const slot = existing.categories[key] || { messages: 0, occurrences: 0 };
+      slot.messages += Number(value.messages || 0);
+      slot.occurrences += Number(value.occurrences || 0);
+      existing.categories[key] = slot;
+    }
+    timelineByDay.set(day, existing);
+  }
+  const directUserMessages = Number(codexMeter.directUserMessages || 0) + Number(hermesMeter.directUserMessages || 0);
+  const swearIndexMessages = Number(codexMeter.swearIndexMessages || 0) + Number(hermesMeter.swearIndexMessages || 0);
+  return {
+    ...codexMeter,
+    directUserMessages,
+    swearIndexMessages,
+    swearIndexOccurrences: Number(codexMeter.swearIndexOccurrences || 0) + Number(hermesMeter.swearIndexOccurrences || 0),
+    swearIndexScore: Number(codexMeter.swearIndexScore || 0) + Number(hermesMeter.swearIndexScore || 0),
+    swearIndexRate: directUserMessages ? (swearIndexMessages / directUserMessages) * 100 : 0,
+    categories: [...categories.values()].sort((a, b) => Number(b.score || 0) - Number(a.score || 0)),
+    timeline: [...timelineByDay.values()].sort((a, b) => String(a.day).localeCompare(String(b.day))),
+  };
+}
+
 function renderSwearMeter(data) {
-  const meter = (((data.codex || {}).sessions || {}).swearMeter || {});
-  const visible = hasSystem("codex") && Number(meter.directUserMessages || 0) > 0;
+  const meter = combinedSwearMeter(data);
+  const visible = Number(meter.directUserMessages || 0) > 0;
   if (!visible) {
-    setHtml("#swear-meter-summary", emptyHtml("No Codex user messages found."));
+    setHtml("#swear-meter-summary", emptyHtml("No user messages found."));
     return;
   }
   if (!swearLegendInitialized) {
@@ -610,10 +941,10 @@ function renderSwearMeter(data) {
     "#swear-meter-summary",
     `
       <div class="mini-metrics">
-        ${metric("Index", formatPercent(selectedTotals.rate), `${formatNumber(selectedTotals.selectedMessages)} of ${formatNumber(selectedTotals.messages)} user messages`)}
+        ${metric("Index", formatPercent(selectedTotals.rate), `${formatNumber(selectedTotals.selectedMessages)} of ${formatNumber(selectedTotals.messages)} direct prompts`)}
         ${metric("Hits", formatCompact(selectedTotals.selectedOccurrences), `${formatCompact(meter.swearIndexOccurrences)} total occurrences`)}
       </div>
-      <div id="swear-meter-chart" class="chart swear-chart" role="img" aria-label="Swear index over time"></div>
+      <div id="swear-meter-chart" class="chart swear-chart" role="img" aria-label="Frustration index over time"></div>
       <div id="swear-meter-legend" class="legend-list swear-legend"></div>
     `,
   );
@@ -735,24 +1066,33 @@ function renderSourceHealth(data) {
   const opencode = data.opencode || {};
   const opencodeRoots = opencode.roots || {};
   const opencodeDb = opencode.database || {};
+  const cursor = data.cursor || {};
+  const cursorRoots = cursor.roots || {};
+  const cursorGlobal = cursor.globalState || {};
+  const cursorWorkspaces = cursor.workspaces || {};
   const discovery = data.discovery || {};
   setHtml(
     "#source-health",
     renderKeyValueList([
       { label: "Codex root", note: codexFs.root?.path || (data.codex || {}).root, value: codexFs.root?.exists ? "present" : "missing" },
       { label: "Discovered Codex roots", note: (discovery.scanRoots || []).join(" | "), value: formatNumber((discovery.codexRoots || []).length) },
-      { label: "Codex desktop app", note: codexApp.root?.path || "", value: codexApp.available ? "readable" : "missing" },
-      { label: "Codex app database", note: appDb.database?.path || "", value: appDb.available ? "readable" : "missing" },
+      { label: "Codex desktop app", note: healthNote(codexApp), value: healthValue(codexApp) },
+      { label: "Codex app database", note: healthNote(appDb), value: healthValue(appDb) },
       { label: "Codex-linked app roots", note: "Local folders with Codex markers", value: formatNumber((discovery.appRoots || []).length) },
-      { label: "State SQLite", note: ((data.codex || {}).state || {}).database?.path, value: ((data.codex || {}).state || {}).available ? "readable" : "missing" },
-      { label: "Log SQLite", note: ((data.codex || {}).logs || {}).database?.path, value: ((data.codex || {}).logs || {}).available ? "readable" : "missing" },
+      { label: "State SQLite", note: healthNote((data.codex || {}).state || {}), value: healthValue((data.codex || {}).state || {}) },
+      { label: "Log SQLite", note: healthNote((data.codex || {}).logs || {}), value: healthValue((data.codex || {}).logs || {}) },
       { label: "OpenCode data", note: opencodeRoots.data?.path || "", value: opencodeRoots.data?.exists ? "present" : "missing" },
-      { label: "OpenCode database", note: opencodeDb.database?.path || "", value: opencodeDb.available ? "readable" : "missing" },
+      { label: "OpenCode database", note: healthNote(opencodeDb), value: healthValue(opencodeDb) },
       { label: "OpenCode desktop app", note: opencodeRoots.desktop?.path || "", value: opencodeRoots.desktop?.exists ? "present" : "missing" },
       { label: "OpenCode CLI", note: opencode.cli?.binary?.path || "", value: opencode.cli?.binary?.exists ? opencode.version || "present" : "missing" },
-      { label: "Lattice DB", note: lattice.database?.path, value: lattice.databaseStats?.available ? "readable" : "missing" },
-      { label: "Hermes local", note: hermesLocal.root?.path || "", value: hermesLocal.available ? "readable" : "missing" },
-      { label: "Hermes WSL", note: hermesWsl.root?.path || hermesWsl.error || "", value: hermesWsl.available ? "readable" : "unavailable" },
+      { label: "Cursor app", note: cursorRoots.app?.path || "", value: cursorRoots.app?.exists ? "present" : "missing" },
+      { label: "Cursor logs", note: cursorRoots.logs?.path || "", value: cursor.logs?.files ? formatNumber(cursor.logs.files) : "missing" },
+      { label: "Cursor process monitor", note: cursorRoots.processMonitor?.path || "", value: cursor.processMonitor?.files ? formatNumber(cursor.processMonitor.files) : "missing" },
+      { label: "Cursor global state", note: healthNote(cursorGlobal), value: healthValue(cursorGlobal) },
+      { label: "Cursor workspaces", note: cursorRoots.workspaceStorage?.path || "", value: formatNumber(cursorWorkspaces.total || 0) },
+      { label: "Lattice DB", note: healthNote(lattice.databaseStats || {}, lattice.database?.path), value: healthValue(lattice.databaseStats || {}) },
+      { label: "Codex agent roots", note: (hermesLocal.roots || []).join(" | "), value: formatNumber((hermesLocal.roots || []).length) },
+      { label: "Codex agent WSL", note: hermesWsl.root?.path || hermesWsl.error || "", value: hermesWsl.available ? "readable" : "unavailable" },
     ]),
   );
 }
@@ -764,6 +1104,8 @@ function renderSourcesPage(data) {
   const payload = db.codexAuthPayload || {};
   const discovery = data.discovery || {};
   const opencodeDb = ((data.opencode || {}).database || {});
+  const cursor = data.cursor || {};
+  const cursorSummary = cursor.summary || {};
   setHtml(
     "#app-records-summary",
     [
@@ -771,8 +1113,10 @@ function renderSourcesPage(data) {
       metric("Codex roots", formatCompact((discovery.codexRoots || []).length), "Local candidates"),
       metric("Codex app roots", formatCompact((discovery.codexAppRoots || []).length), "Desktop app candidates"),
       metric("OpenCode roots", formatCompact((discovery.opencodeRoots || []).length), "CLI + app candidates"),
-      metric("Hermes roots", formatCompact((discovery.hermesRoots || []).length), "Local agent candidates"),
+      metric("Cursor roots", formatCompact((discovery.cursorRoots || []).filter((root) => root.exists).length), "App + storage candidates"),
+      metric("Codex agent roots", formatCompact((discovery.hermesRoots || []).length), "Hermes/Codex candidates"),
       metric("OpenCode sessions", formatCompact((opencodeDb.tables || {}).session), `${formatCompact(((opencodeDb.messages || {}).tokens || {}).total)} tokens`),
+      metric("Cursor activity", formatCompact(Number(cursorSummary.generations || 0) + Number(cursorSummary.composers || 0)), `${formatCompact(cursorSummary.acceptedLines || 0)} accepted lines`),
       metric("Pipeline rows", formatCompact((db.tables || {}).document_pipeline_results), `${formatCompact(core.documents)} documents`),
       metric("Review suggestions", formatCompact(core.reviewSuggestions), "Codex field review"),
       metric("Parsed payloads", formatCompact(payload.parsedPayloads), `${formatCompact(payload.pagesAnalyzed)} pages analyzed`),
@@ -783,18 +1127,42 @@ function renderSourcesPage(data) {
   const hermesLocal = hermes.local || {};
   const hermesState = hermesLocal.state || hermes.state || {};
   const hermesSessions = hermesState.sessions || {};
+  const hermesModels = hermesState.byModel || [];
+  const hermesSources = hermesState.bySource || [];
+  const hermesCron = hermesSources.find((row) => String(row.source || "").toLowerCase() === "cron") || {};
+  const hermesRecent = hermesState.recentSessions || [];
   const status = document.querySelector("#hermes-status");
-  status.textContent = hermes.available ? "Available" : "Unavailable";
+  status.textContent = hermes.available ? "Included" : "Unavailable";
   status.className = `tag ${hermes.available ? "green" : "red"}`;
   setHtml(
     "#hermes-summary",
     renderKeyValueList([
-      { label: "Root", note: hermesLocal.root?.path || hermes.root?.path || hermes.error || "", value: hermes.available ? "present" : "missing" },
+      { label: "Roots", note: (hermesLocal.roots || []).join(" | ") || hermes.root?.path || hermes.error || "", value: hermes.available ? formatNumber((hermesLocal.roots || []).length || 1) : "missing" },
       { label: "Auth", note: hermesLocal.auth?.path || hermes.auth?.path || "", value: (hermesLocal.auth || hermes.auth)?.exists ? "present" : "missing" },
       { label: "Codex auth", note: hermesLocal.codexAuth?.path || hermes.codexAuth?.path || "", value: (hermesLocal.codexAuth || hermes.codexAuth)?.exists ? "present" : "missing" },
-      { label: "State DB", note: hermesState.database?.path || "", value: hermesState.available ? "readable" : "missing" },
+      { label: "State DB", note: healthNote(hermesState), value: healthValue(hermesState) },
       { label: "Sessions", note: `${formatCompact(hermesSessions.inputTokens || 0)} in / ${formatCompact(hermesSessions.outputTokens || 0)} out`, value: formatNumber(hermesSessions.total || 0) },
-      { label: "Git", note: hermes.git?.head || hermes.git?.error || "", value: hermes.git?.branch || "" },
+      {
+        label: "Models",
+        note: hermesModels.slice(0, 4).map((row) => `${row.model || "[unknown]"} ${formatCompact(row.tokens)}`).join(" | "),
+        value: formatNumber(hermesModels.length),
+      },
+      {
+        label: "Sources",
+        note: hermesSources.slice(0, 5).map((row) => `${row.source || "[unknown]"} ${formatNumber(row.sessions)}`).join(" | "),
+        value: formatNumber(hermesSources.length),
+      },
+      {
+        label: "Cron sessions",
+        note: `${formatCompact(hermesCron.tokens || 0)} tokens from Hermes source=cron`,
+        value: formatNumber(hermesCron.sessions || 0),
+      },
+      {
+        label: "Recent agent sessions",
+        note: hermesRecent.slice(0, 3).map((row) => `${row.source || "[unknown]"} / ${row.model || "[unknown]"}`).join(" | "),
+        value: formatNumber(hermesRecent.length),
+      },
+      { label: "Shown as", note: "Usage legend and project rows", value: "Codex" },
       { label: "Session files", note: `${formatNumber((hermesLocal.sessions || hermes.sessions)?.files || 0)} files`, value: hermes.available ? "checked" : "" },
     ]),
   );
@@ -804,6 +1172,8 @@ function renderSourcesPage(data) {
   const opencode = data.opencode || {};
   const opencodeLogs = opencode.logs || {};
   const opencodeStorage = opencode.storage || {};
+  const cursorLogs = ((data.cursor || {}).logs || {});
+  const cursorProcess = ((data.cursor || {}).processMonitor || {});
   const latticeFs = ((data.lattice || {}).filesystem || {});
   setHtml(
     "#stored-records",
@@ -815,6 +1185,7 @@ function renderSourcesPage(data) {
       ["Codex app cache", codexApp.cache?.files, formatBytes(codexApp.cache?.bytes)],
       ["OpenCode logs", Number(opencodeLogs.cli?.files || 0) + Number(opencodeLogs.app?.files || 0), formatBytes(Number(opencodeLogs.cli?.bytes || 0) + Number(opencodeLogs.app?.bytes || 0))],
       ["OpenCode diffs", opencodeStorage.sessionDiffs?.files, formatBytes(opencodeStorage.sessionDiffs?.bytes)],
+      ["Cursor logs", Number(cursorLogs.files || 0) + Number(cursorProcess.files || 0), formatBytes(Number(cursorLogs.bytes || 0) + Number(cursorProcess.bytes || 0))],
       ["Lattice logs", latticeFs.dataLogs?.files, formatBytes(latticeFs.dataLogs?.bytes)],
     ]
       .map(([label, value, note]) => `<div class="record-card"><span>${escapeHtml(label)}</span><strong>${escapeHtml(formatCompact(value))}</strong><span>${escapeHtml(note)}</span></div>`)
@@ -824,13 +1195,13 @@ function renderSourcesPage(data) {
 
 function renderAboutPage(data) {
   const about = data.about || {};
-  const meter = (((data.codex || {}).sessions || {}).swearMeter || {});
+  const meter = combinedSwearMeter(data);
   const methods = about.swearMeterMethods || [];
   setHtml(
     "#about-metrics",
     [
-      metric("User messages", formatNumber(meter.directUserMessages), "Scanned locally"),
-      metric("Index messages", formatNumber(meter.swearIndexMessages), `${formatPercent(meter.swearIndexRate)} of user messages`),
+      metric("Direct prompts", formatNumber(meter.directUserMessages), "Scanned locally"),
+      metric("Index messages", formatNumber(meter.swearIndexMessages), `${formatPercent(meter.swearIndexRate)} of direct prompts`),
       metric("Hits", formatCompact(meter.swearIndexOccurrences), "Matched phrases"),
       metric("Word sets", formatNumber(methods.length), `${formatNumber(methods.reduce((total, method) => total + Number(method.termCount || 0), 0))} terms`),
     ].join(""),
@@ -889,8 +1260,18 @@ async function loadSnapshot({ refresh = false } = {}) {
   try {
     const response = await fetch(`/api/snapshot${refresh ? "?refresh=1" : ""}`, { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    render(await response.json());
-    if (statusEl) statusEl.textContent = `Scan complete in ${snapshot.meta?.scanSeconds ?? "?"}s`;
+    const data = await response.json();
+    render(data);
+    if (data.meta?.loading) {
+      if (statusEl) statusEl.textContent = data.meta.message || "Scanning records";
+      renderScanProgress(data.meta.message || "Scanning local records");
+      refreshSnapshotStream({ refresh: false });
+    } else if (data.meta?.cached) {
+      if (statusEl) statusEl.textContent = data.meta.refreshing ? "Loaded cached records; refreshing" : "Loaded cached records";
+      if (data.meta.refreshing) scheduleSnapshotPoll();
+    } else if (statusEl) {
+      statusEl.textContent = `Scan complete in ${snapshot.meta?.scanSeconds ?? "?"}s`;
+    }
   } catch (error) {
     if (statusEl) statusEl.textContent = "Scan failed";
     setHtml("#overview-grid", `<p class="error">${escapeHtml(error.message || error)}</p>`);
@@ -902,7 +1283,34 @@ async function loadSnapshot({ refresh = false } = {}) {
   }
 }
 
-function refreshSnapshotStream() {
+function scheduleSnapshotPoll() {
+  if (snapshotPoll) return;
+  snapshotPoll = window.setTimeout(() => {
+    snapshotPoll = null;
+    loadSnapshot();
+  }, 5000);
+}
+
+function renderScanProgress(message) {
+  setHtml(
+    "#overview-grid",
+    [
+      metric("Scan progress", "Running", message),
+      metric("Storage", "Local cache", "Historical records stay in memory"),
+      metric("Refresh scope", "Latest day", "Refresh only rescans the active slice"),
+      metric("Privacy", "Read only", "No source records leave this laptop"),
+    ].join(""),
+  );
+  setHtml("#usage-legend", emptyHtml("Waiting for scan results."));
+  document.querySelector("#usage-chart").innerHTML = emptyHtml(message);
+  setHtml("#swear-meter-summary", emptyHtml(message));
+}
+
+function refreshSnapshotStream({ refresh = true } = {}) {
+  if (snapshotPoll) {
+    window.clearTimeout(snapshotPoll);
+    snapshotPoll = null;
+  }
   if (!window.EventSource) {
     loadSnapshot({ refresh: true });
     return;
@@ -912,32 +1320,52 @@ function refreshSnapshotStream() {
   refreshButton.classList.add("is-loading");
   refreshButton.setAttribute("aria-busy", "true");
   refreshButton.textContent = "Loading";
-  document.querySelector("#generated-at").textContent = "Refreshing local records";
-  snapshotEvents = new EventSource("/api/snapshot/events?refresh=1");
+  const startingMessage = refresh ? "Refreshing recent local records" : "Scanning local records";
+  const finishStream = () => {
+    if (snapshotEvents) snapshotEvents.close();
+    snapshotEvents = null;
+    refreshButton.textContent = "Refresh";
+    refreshButton.classList.remove("is-loading");
+    refreshButton.setAttribute("aria-busy", "false");
+    refreshButton.disabled = false;
+  };
+  const failStream = (message) => {
+    if (statusEl) statusEl.textContent = "Scan failed";
+    setHtml("#overview-grid", `<p class="error">${escapeHtml(message || "Scan failed. Try Refresh again.")}</p>`);
+    finishStream();
+  };
+  const parseStreamPayload = (event) => {
+    try {
+      return JSON.parse(event.data || "{}");
+    } catch (error) {
+      failStream("Scan stream returned invalid data. Try Refresh again.");
+      return null;
+    }
+  };
+  document.querySelector("#generated-at").textContent = startingMessage;
+  renderScanProgress(startingMessage);
+  snapshotEvents = new EventSource(`/api/snapshot/events${refresh ? "?refresh=1" : ""}`);
   snapshotEvents.addEventListener("status", (event) => {
-    const payload = JSON.parse(event.data);
-    document.querySelector("#generated-at").textContent = payload.message || "Refreshing local records";
+    const payload = parseStreamPayload(event);
+    if (!payload) return;
+    const message = payload.message || startingMessage;
+    document.querySelector("#generated-at").textContent = message;
+    renderScanProgress(message);
   });
   snapshotEvents.addEventListener("complete", (event) => {
-    render(JSON.parse(event.data));
-    snapshotEvents.close();
-    snapshotEvents = null;
-    refreshButton.textContent = "Refresh";
-    refreshButton.classList.remove("is-loading");
-    refreshButton.setAttribute("aria-busy", "false");
-    refreshButton.disabled = false;
+    const payload = parseStreamPayload(event);
+    if (!payload) return;
+    render(payload);
+    finishStream();
   });
   snapshotEvents.addEventListener("error", (event) => {
+    let message = "Scan stream disconnected. Try Refresh again.";
     if (event.data) {
-      const payload = JSON.parse(event.data);
-      setHtml("#overview-grid", `<p class="error">${escapeHtml(payload.message || "Scan failed")}</p>`);
+      const payload = parseStreamPayload(event);
+      if (!payload) return;
+      message = payload.message || message;
     }
-    snapshotEvents.close();
-    snapshotEvents = null;
-    refreshButton.textContent = "Refresh";
-    refreshButton.classList.remove("is-loading");
-    refreshButton.setAttribute("aria-busy", "false");
-    refreshButton.disabled = false;
+    failStream(message);
   });
 }
 
