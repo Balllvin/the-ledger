@@ -12,6 +12,7 @@ from .discovery import discover_local_sources, enrich_discovery_with_workspaces,
 from .hermes import collect_hermes
 from .lattice import collect_lattice
 from .opencode import collect_opencode
+from .pricing import build_billing_estimate
 from .swear_meter import swear_meter_methods
 from .utils import default_home, utc_now_iso
 
@@ -69,6 +70,7 @@ def collect_snapshot(
         },
     }
     snapshot["overview"] = _overview(snapshot)
+    snapshot["billing"] = build_billing_estimate(snapshot)
     snapshot["meta"]["scanSeconds"] = round(time.perf_counter() - started, 3)
     return snapshot
 

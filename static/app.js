@@ -17,19 +17,6 @@ let snapshotPoll = null;
 
 const SERIES_COLORS = ["#151515", "#1f6c9f", "#346538", "#956400", "#9f2f2d", "#5f4b8b", "#7a5b2e", "#3f6f72"];
 const SWEAR_CATEGORY_COLORS = ["#9f2f2d", "#1f6c9f", "#346538", "#956400", "#5f4b8b", "#3f6f72", "#7a5b2e", "#2f3f58", "#8b3f62"];
-const PRICE_DENOMINATOR = 1_000_000;
-const DEFAULT_PRICE_MODEL = "gpt-5.5";
-const MODEL_PRICES = {
-  "gpt-5.5": { label: "GPT-5.5", input: 5, cachedInput: 0.5, output: 30 },
-  "gpt-5.4": { label: "GPT-5.4", input: 2.5, cachedInput: 0.25, output: 15 },
-  "gpt-5.4-mini": { label: "GPT-5.4 mini", input: 0.75, cachedInput: 0.075, output: 4.5 },
-  "gpt-5.3-codex": { label: "GPT-5.3 Codex", input: 1.75, cachedInput: 0.175, output: 14 },
-  "gpt-5-codex": { label: "GPT-5 Codex", input: 1.25, cachedInput: 0.125, output: 10 },
-  "gpt-5": { label: "GPT-5", input: 1.25, cachedInput: 0.125, output: 10 },
-  "deepseek-v4-pro": { label: "DeepSeek V4 Pro", input: 0.435, cachedInput: 0.003625, output: 0.87 },
-  "deepseek-v4-flash": { label: "DeepSeek V4 Flash", input: 0.14, cachedInput: 0.0028, output: 0.28 },
-  o3: { label: "o3", input: 2, cachedInput: 0.5, output: 8 },
-};
 
 function swearCategoryColor(category, categories) {
   const index = Math.max(0, categories.findIndex((item) => item.id === category.id));
@@ -220,161 +207,55 @@ function hasSystem(name) {
 }
 
 function selectedTokenBreakdown(data) {
-  const codexTokens = (((data.codex || {}).sessions || {}).tokenTotals || {});
-  const hermesSessions = (((data.hermes || {}).local || {}).state || {}).sessions || {};
-  const opencodeTokens = (((data.opencode || {}).database || {}).messages || {}).tokens || {};
   const breakdown = { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 };
-  if (hasSystem("codex")) {
-    breakdown.input += Number(codexTokens.input_tokens || 0);
-    breakdown.output += Number(codexTokens.output_tokens || 0);
-    breakdown.reasoning += Number(codexTokens.reasoning_output_tokens || 0);
-    breakdown.cacheRead += Number(codexTokens.cached_input_tokens || 0);
-    breakdown.input += Number(hermesSessions.inputTokens || 0);
-    breakdown.output += Number(hermesSessions.outputTokens || 0);
-    breakdown.reasoning += Number(hermesSessions.reasoningTokens || 0);
-    breakdown.cacheRead += Number(hermesSessions.cacheReadTokens || 0);
-    breakdown.cacheWrite += Number(hermesSessions.cacheWriteTokens || 0);
-  }
-  if (hasSystem("opencode")) {
-    breakdown.input += Number(opencodeTokens.input || 0);
-    breakdown.output += Number(opencodeTokens.output || 0);
-    breakdown.reasoning += Number(opencodeTokens.reasoning || 0);
-    breakdown.cacheRead += Number(opencodeTokens.cacheRead || 0);
-    breakdown.cacheWrite += Number(opencodeTokens.cacheWrite || 0);
-  }
-  breakdown.known = breakdown.input + breakdown.output + breakdown.reasoning;
+  selectedBillingSources(data).forEach((source) => {
+    breakdown.input += Number(source.inputTokens || 0);
+    breakdown.output += Number(source.outputTokens || 0);
+    breakdown.reasoning += Number(source.reasoningTokens || 0);
+    breakdown.cacheRead += Number(source.cachedInputTokens || 0);
+    breakdown.cacheWrite += Number(source.cacheWriteTokens || 0);
+  });
+  breakdown.known = breakdown.input + breakdown.output;
   return breakdown;
-}
-
-function canonicalTokenTotals(value) {
-  const tokens = value || {};
-  const input = Number(tokens.input ?? tokens.input_tokens ?? tokens.inputTokens ?? 0);
-  const output = Number(tokens.output ?? tokens.output_tokens ?? tokens.outputTokens ?? 0);
-  const reasoning = Number(tokens.reasoning ?? tokens.reasoning_output_tokens ?? tokens.reasoningTokens ?? 0);
-  const cacheRead = Number(tokens.cacheRead ?? tokens.cached_input_tokens ?? tokens.cacheReadTokens ?? 0);
-  const cacheWrite = Number(tokens.cacheWrite ?? tokens.cacheWriteTokens ?? 0);
-  const total = Number(tokens.total ?? tokens.total_tokens ?? tokens.tokens ?? input + output + reasoning + cacheRead + cacheWrite);
-  return { input, output, reasoning, cacheRead, cacheWrite, total };
-}
-
-function normalizePriceModel(model) {
-  const id = String(model || "").toLowerCase();
-  if (!id || id === "[unknown]") return "";
-  if (id.includes("gpt-5.4-mini")) return "gpt-5.4-mini";
-  if (id.includes("gpt-5.5")) return "gpt-5.5";
-  if (id.includes("gpt-5.4")) return "gpt-5.4";
-  if (id.includes("gpt-5.3-codex")) return "gpt-5.3-codex";
-  if (id.includes("gpt-5-codex")) return "gpt-5-codex";
-  if (id === "o3" || id.startsWith("o3-")) return "o3";
-  if (id.includes("deepseek-v4-pro")) return "deepseek-v4-pro";
-  if (id.includes("deepseek-v4-flash") || id === "deepseek-chat" || id === "deepseek-reasoner") return "deepseek-v4-flash";
-  if (id.includes("gpt-5")) return "gpt-5";
-  return "";
 }
 
 function emptyCostEstimate() {
   return {
     inputUsd: 0,
     outputUsd: 0,
+    totalUsd: 0,
     inputTokens: 0,
     outputTokens: 0,
     reasoningTokens: 0,
     cachedInputTokens: 0,
-    fallbackTokens: 0,
-    fallbackModels: new Set(),
+    cacheWriteTokens: 0,
+    billableInputTokens: 0,
+    billableOutputTokens: 0,
+    pricedTokens: 0,
+    unpricedTokens: 0,
+    estimatedTokens: 0,
   };
 }
 
-function addPricedTokens(target, model, tokens, options = {}) {
-  const priceModel = normalizePriceModel(model);
-  const effectiveModel = priceModel || DEFAULT_PRICE_MODEL;
-  const price = MODEL_PRICES[effectiveModel];
-  const cacheIncludedInInput = options.cacheIncludedInInput === true;
-  const cachedInput = Math.max(0, tokens.cacheRead || 0);
-  const uncachedInput = Math.max(0, cacheIncludedInInput ? (tokens.input || 0) - cachedInput : (tokens.input || 0) + (tokens.cacheWrite || 0));
-  const outputTokens = Math.max(0, tokens.output || 0);
-  const reasoningTokens = Math.max(0, tokens.reasoning || 0);
-  target.inputUsd += (uncachedInput * price.input + cachedInput * price.cachedInput) / PRICE_DENOMINATOR;
-  target.outputUsd += ((outputTokens + reasoningTokens) * price.output) / PRICE_DENOMINATOR;
-  target.inputTokens += uncachedInput + cachedInput;
-  target.outputTokens += outputTokens;
-  target.reasoningTokens += reasoningTokens;
-  target.cachedInputTokens += cachedInput;
-  if (!priceModel) {
-    target.fallbackTokens += uncachedInput + cachedInput + outputTokens + reasoningTokens;
-    target.fallbackModels.add(String(model || "[unknown]"));
+function selectedBillingSources(data) {
+  const sources = (data.billing || {}).sources || {};
+  const selected = [];
+  if (hasSystem("codex")) {
+    if (sources.codex) selected.push(sources.codex);
+    if (sources.hermes) selected.push(sources.hermes);
   }
-}
-
-function splitTotalsByModel(totalTokens, modelCounts) {
-  const entries = Object.entries(modelCounts || {}).filter(([, count]) => Number(count || 0) > 0);
-  const weightTotal = entries.reduce((total, [, count]) => total + Number(count || 0), 0);
-  if (!weightTotal) return [["[unknown]", totalTokens]];
-  return entries.map(([model, count]) => {
-    const ratio = Number(count || 0) / weightTotal;
-    return [
-      model,
-      {
-        input: totalTokens.input * ratio,
-        output: totalTokens.output * ratio,
-        reasoning: totalTokens.reasoning * ratio,
-        cacheRead: totalTokens.cacheRead * ratio,
-        cacheWrite: totalTokens.cacheWrite * ratio,
-        total: totalTokens.total * ratio,
-      },
-    ];
-  });
-}
-
-function addCodexCost(cost, data) {
-  const sessions = ((data.codex || {}).sessions || {});
-  const byModel = sessions.tokenTotalsByModel || {};
-  const entries = Object.entries(byModel);
-  if (entries.length) {
-    entries.forEach(([model, tokens]) => addPricedTokens(cost, model, canonicalTokenTotals(tokens), { cacheIncludedInInput: true }));
-    return;
-  }
-  const totals = canonicalTokenTotals(sessions.tokenTotals || {});
-  splitTotalsByModel(totals, sessions.models || {}).forEach(([model, tokens]) => addPricedTokens(cost, model, tokens, { cacheIncludedInInput: true }));
-}
-
-function addHermesCost(cost, data) {
-  const state = (((data.hermes || {}).local || {}).state || {});
-  const sessions = state.sessions || {};
-  const totals = canonicalTokenTotals(sessions);
-  const rows = state.byModel || [];
-  if (!rows.length) {
-    addPricedTokens(cost, "[unknown]", totals);
-    return;
-  }
-  const hasSplitTokens = rows.some((row) => Number(row.inputTokens || 0) || Number(row.outputTokens || 0) || Number(row.reasoningTokens || 0) || Number(row.cacheReadTokens || 0));
-  if (hasSplitTokens) {
-    rows.forEach((row) => addPricedTokens(cost, row.model, canonicalTokenTotals(row)));
-    return;
-  }
-  const byModel = Object.fromEntries(rows.map((row) => [row.model || "[unknown]", row.tokens || row.sessions || 0]));
-  splitTotalsByModel(totals, byModel).forEach(([model, tokens]) => addPricedTokens(cost, model, tokens));
-}
-
-function addOpenCodeCost(cost, data) {
-  const database = ((data.opencode || {}).database || {});
-  const byModel = database.tokensByModel || {};
-  const entries = Object.entries(byModel);
-  if (entries.length) {
-    entries.forEach(([model, tokens]) => addPricedTokens(cost, model, canonicalTokenTotals(tokens)));
-    return;
-  }
-  const totals = canonicalTokenTotals(((database.messages || {}).tokens || {}));
-  splitTotalsByModel(totals, database.models || {}).forEach(([model, tokens]) => addPricedTokens(cost, model, tokens));
+  if (hasSystem("opencode") && sources.opencode) selected.push(sources.opencode);
+  if (hasSystem("cursor") && sources.cursor) selected.push(sources.cursor);
+  return selected;
 }
 
 function selectedCostEstimate(data) {
   const cost = emptyCostEstimate();
-  if (hasSystem("codex")) {
-    addCodexCost(cost, data);
-    addHermesCost(cost, data);
-  }
-  if (hasSystem("opencode")) addOpenCodeCost(cost, data);
+  selectedBillingSources(data).forEach((source) => {
+    Object.keys(cost).forEach((key) => {
+      cost[key] += Number(source[key] || 0);
+    });
+  });
   return cost;
 }
 
@@ -841,15 +722,16 @@ function renderUsagePage(data) {
   const overview = selectedOverview(data);
   const tokenBreakdown = overview.tokenBreakdown || {};
   const costEstimate = overview.costEstimate || emptyCostEstimate();
-  const fallbackNote = costEstimate.fallbackTokens ? `, ${formatCompact(costEstimate.fallbackTokens)} fallback` : "";
+  const unpricedNote = costEstimate.unpricedTokens ? `, ${formatCompact(costEstimate.unpricedTokens)} unpriced` : "";
+  const estimatedNote = costEstimate.estimatedTokens ? `${formatCompact(costEstimate.estimatedTokens)} bucket-estimated` : "Exact local buckets";
   setHtml(
     "#overview-grid",
     [
       metric("Total tokens", formatCompact(overview.tokens), `${formatNumber(overview.runs)} runs`),
-      metric("Input tokens", formatCompact(tokenBreakdown.input), `${formatCompact(tokenBreakdown.cacheRead)} cached, parsed JSONL`),
-      metric("Output tokens", formatCompact(tokenBreakdown.output), `${formatCompact(tokenBreakdown.reasoning)} reasoning, parsed JSONL`),
-      metric("Input cost", formatCurrency(costEstimate.inputUsd), `${formatCompact(costEstimate.inputTokens)} billable${fallbackNote}`),
-      metric("Output cost", formatCurrency(costEstimate.outputUsd), `${formatCompact(costEstimate.outputTokens + costEstimate.reasoningTokens)} output + reasoning`),
+      metric("Input tokens", formatCompact(tokenBreakdown.input), `${formatCompact(tokenBreakdown.cacheRead)} cached, ${estimatedNote}`),
+      metric("Output tokens", formatCompact(tokenBreakdown.output), `${formatCompact(tokenBreakdown.reasoning)} reasoning tracked`),
+      metric("Input cost", formatCurrency(costEstimate.inputUsd), `${formatCompact(costEstimate.billableInputTokens)} billable${unpricedNote}`),
+      metric("Output cost", formatCurrency(costEstimate.outputUsd), `${formatCompact(costEstimate.billableOutputTokens)} billable output`),
       metric("Projects", formatNumber(overview.projects), "Selected workspaces"),
       metric("Automations", formatCompact(overview.automations), `${formatCompact(overview.automationRuns)} Codex runs`),
       metric("Logs", formatCompact(overview.logs), `${formatNumber(overview.failures)} command failures`),

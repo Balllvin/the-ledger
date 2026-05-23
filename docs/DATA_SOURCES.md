@@ -158,7 +158,9 @@ Cursor auth handling:
 
 ## Known Limits
 
-- Cost cards are estimates. They use public provider API prices embedded in the browser, local token totals, and model IDs when present. Unknown models are included with the dashboard fallback rate and marked as fallback in the Usage note.
+- Cost cards are estimates built on the server from local token totals and public, non-discounted provider API prices. The browser displays the server estimate; it does not carry a separate pricing table.
+- Codex billing uses the complete `state_5.sqlite` thread token ledger when it is available. Codex state records expose total tokens by model, but not input/output/cache buckets, so the billing estimator allocates those complete totals using model-specific bucket ratios from parsed Codex JSONL sessions when possible and the blended parsed Codex ratio otherwise. These rows are marked as bucket-estimated.
+- Unknown or missing model IDs are not fallback-priced. They remain in token totals and are reported as unpriced until a public API price can be matched.
 - Cursor does not expose an OpenAI-style token ledger in the local records currently scanned, so Cursor contributes logs, workspaces, generations, composers, and line activity, but not token totals or cost estimates.
 - If Codex changes its JSONL or SQLite schema, the monitor still returns table counts and source health, but some detailed sections may become empty until parser mappings are updated.
 - If OpenCode changes its SQLite JSON payload shape, the monitor still returns source/file health and table counts, but token detail may become empty until parser mappings are updated.

@@ -716,6 +716,14 @@ def collect_state(codex_root: Path) -> dict[str, Any]:
         return result
     try:
         result["available"] = True
+        thread_columns = _table_columns(con, "threads")
+        has_model = "model" in thread_columns
+        model_expr = "coalesce(nullif(model,''),'[missing]')" if has_model else "'[missing]'"
+        thread_select = (
+            "id,title,source,model_provider,"
+            + ("model," if has_model else "")
+            + "cwd,tokens_used,has_user_event,archived,created_at,updated_at,rollout_path"
+        )
         tables = query_rows(con, "select name from sqlite_master where type='table' order by name")
         result["tables"] = {row["name"]: table_count(con, row["name"]) for row in tables}
         result["threads"] = {
@@ -730,6 +738,12 @@ def collect_state(codex_root: Path) -> dict[str, Any]:
                 con,
                 "select source, count(*) threads, coalesce(sum(tokens_used),0) tokens from threads group by source order by tokens desc",
             )
+        )
+        result["tokensByModel"] = query_rows(
+            con,
+            f"select {model_expr} model, coalesce(model_provider,'[unknown]') modelProvider, "
+            "count(*) threads, coalesce(sum(tokens_used),0) tokens "
+            f"from threads group by {model_expr}, model_provider order by tokens desc",
         )
         result["byCwd"] = [
             {
@@ -757,17 +771,17 @@ def collect_state(codex_root: Path) -> dict[str, Any]:
             _thread_row(row)
             for row in query_rows(
                 con,
-                "select id,title,source,model_provider,cwd,tokens_used,has_user_event,archived,created_at,updated_at,rollout_path from threads order by updated_at desc limit 50",
+                f"select {thread_select} from threads order by updated_at desc limit 50",
             )
         ]
         result["topThreads"] = [
             _thread_row(row)
             for row in query_rows(
                 con,
-                "select id,title,source,model_provider,cwd,tokens_used,has_user_event,archived,created_at,updated_at,rollout_path from threads order by tokens_used desc limit 30",
+                f"select {thread_select} from threads order by tokens_used desc limit 30",
             )
         ]
-        result["projects"] = _collect_project_usage(con)
+        result["projects"] = _collect_project_usage(con, has_model=has_model)
         result["dynamicTools"] = query_rows(
             con,
             "select name, count(*) threads from thread_dynamic_tools group by name order by threads desc limit 30",
@@ -779,6 +793,10 @@ def collect_state(codex_root: Path) -> dict[str, Any]:
     finally:
         con.close()
     return result
+
+
+def _table_columns(con: sqlite3.Connection, table: str) -> set[str]:
+    return {str(row.get("name") or "") for row in query_rows(con, f"pragma table_info({table})")}
 
 
 def _rows_with_source_labels(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -804,6 +822,7 @@ def _thread_row(row: dict[str, Any]) -> dict[str, Any]:
         "title": row.get("title") or "[untitled]",
         "source": _source_label(row.get("source")),
         "modelProvider": row.get("model_provider"),
+        "model": row.get("model") or "[missing]",
         "cwd": path_for_display(row.get("cwd") or ""),
         "tokens": int(row.get("tokens_used") or 0),
         "hasUserEvent": bool(row.get("has_user_event")),
@@ -814,10 +833,12 @@ def _thread_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _collect_project_usage(con: sqlite3.Connection) -> dict[str, Any]:
+def _collect_project_usage(con: sqlite3.Connection, *, has_model: bool = False) -> dict[str, Any]:
     rows = query_rows(
         con,
-        "select id,title,source,model_provider,cwd,tokens_used,created_at,updated_at,archived "
+        "select id,title,source,model_provider,"
+        + ("model," if has_model else "")
+        + "cwd,tokens_used,created_at,updated_at,archived "
         "from threads order by created_at asc",
     )
     days: set[str] = set()
