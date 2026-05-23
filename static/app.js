@@ -845,7 +845,7 @@ function renderUsagePage(data) {
   setHtml(
     "#overview-grid",
     [
-      metric("Total tokens", formatCompact(overview.tokens), `${formatNumber(overview.runs)} sessions`),
+      metric("Total tokens", formatCompact(overview.tokens), `${formatNumber(overview.runs)} runs`),
       metric("Input tokens", formatCompact(tokenBreakdown.input), `${formatCompact(tokenBreakdown.cacheRead)} cached, parsed JSONL`),
       metric("Output tokens", formatCompact(tokenBreakdown.output), `${formatCompact(tokenBreakdown.reasoning)} reasoning, parsed JSONL`),
       metric("Input cost", formatCurrency(costEstimate.inputUsd), `${formatCompact(costEstimate.inputTokens)} billable${fallbackNote}`),
