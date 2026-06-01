@@ -89,6 +89,26 @@ Do not read or report raw private document contents. Signal counts and paths are
 - `THE_LEDGER_DEEP_TEXT_SCAN`: set to `1` to scan small text files for Codex marker strings.
 
 
+## Grok Build Search
+
+Grok Build roots are discovered from:
+
+- `GROK_HOME` (exact root, highest priority)
+- `~/.grok`
+- Bounded scan roots that contain `grok.db`, a `sessions/` directory, or `auth.json` at the expected depth
+
+Grok auth files are presence-only metadata. The collector reads `grok.db` read-only and returns session counts, token/cost aggregates (from `usage_events`), model breakdowns, workspace counts, and recent thread metadata. Raw chat history and full event streams are never returned.
+
+## Grok Files To Recognize
+
+- `grok.db`: primary sessions + usage_events ledger
+- `sessions/`: per-workspace thread directories (summary.json, events.jsonl, chat_history.jsonl, signals.json, terminal/ logs)
+- `auth.json`: present/missing only, always redacted
+- `config.toml`, `user-settings.json`: key names + metadata only
+- `logs/unified.jsonl`: file metadata only
+
+Environment override: `GROK_HOME`
+
 ## Agent Checklist
 
 When adapting to a new laptop:

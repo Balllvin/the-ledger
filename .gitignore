@@ -12,3 +12,16 @@ htmlcov/
 auth.json
 .codex/
 tmp/
+.ledger-cache/
+.grok/
+.playwright-mcp/
+.cursor/
+*.db
+*.db-*
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4
+*.mov

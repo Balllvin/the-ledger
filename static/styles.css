@@ -843,6 +843,7 @@ tr:last-child td {
   .metric-grid.compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
 }
 
 @media (max-width: 640px) {
@@ -919,4 +920,635 @@ tr:last-child td {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* About page — ledger-themed, still follows the warm monochrome system */
+#about-lexicon input[type="search"] {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-soft);
+  color: var(--ink);
+  min-width: 240px;
+}
+
+#about-lexicon input[type="search"]:focus {
+  outline: none;
+  border-color: var(--ink-3);
+  background: var(--surface);
+}
+
+.lexicon {
+  display: grid;
+  gap: 12px;
+}
+
+.lexicon-group {
+  margin-bottom: 4px;
+}
+
+.lexicon-group h4 {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--ink-3);
+  font-family: var(--mono);
+  margin: 0 0 6px;
+  letter-spacing: 0.5px;
+}
+
+.lexicon-entry {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--surface-soft);
+}
+
+.lexicon-entry .lex-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lexicon-entry .lex-head strong {
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.lexicon-entry .lex-weight {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--ink-3);
+}
+
+.lexicon-entry .lex-live {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-2);
+  margin-left: auto;
+}
+
+.lexicon-entry .lex-note {
+  margin: 4px 0 6px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.lexicon-entry details {
+  margin-top: 4px;
+}
+
+.lexicon-entry summary {
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  user-select: none;
+}
+
+.lexicon-entry .term-list {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--ink-3);
+  margin-top: 4px;
+  max-height: 110px;
+  overflow: auto;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.signal-distribution {
+  margin-top: 12px;
+  display: grid;
+  gap: 4px;
+}
+
+.signal-row {
+  display: grid;
+  grid-template-columns: 160px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.signal-row .label {
+  font-family: var(--mono);
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-row .bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.signal-row .bar-fill {
+  height: 100%;
+  background: var(--red-ink);
+}
+
+.signal-row .num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ledger-rules {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+}
+
+.ledger-rule {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.ledger-rule .sym {
+  font-family: var(--mono);
+  font-weight: 650;
+  color: var(--ink);
+  flex: 0 0 18px;
+}
+
+.ledger-kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 16px;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.ledger-kv div {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.ledger-kv .k {
+  font-family: var(--mono);
+  color: var(--ink-3);
+  font-size: 11px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ledger-kv .v {
+  font-family: var(--mono);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-paths {
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-3);
+  background: var(--surface-soft);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ledger-paths .root {
+  color: var(--ink-2);
+}
+
+.ledger-paths .found {
+  color: var(--green-ink);
+}
+
+/* ============================================================
+   THE PRIVATE BOOKS — About page, full of personality
+   Still 100% warm monochrome, border-only, ledger aesthetic.
+   Fun without blobs, gradients, or marketing nonsense.
+   ============================================================ */
+
+.folio-header {
+  border: 2px solid var(--border);
+  background: var(--surface-soft);
+  padding: 20px 22px 18px;
+  margin-bottom: 16px;
+  position: relative;
+}
+
+.folio-header .book-title {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: 2px;
+  color: var(--ink);
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.folio-header .book-subtitle {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+}
+
+.folio-header .book-declaration {
+  margin: 14px 0 0;
+  max-width: 68ch;
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+
+.folio-header .book-meta {
+  margin-top: 12px;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.journal-list {
+  display: grid;
+  gap: 6px;
+}
+
+.journal-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+
+.journal-line:hover {
+  background: var(--surface-soft);
+}
+
+.journal-line .ref {
+  font-family: var(--mono);
+  font-weight: 650;
+  color: var(--ink);
+  flex: 0 0 52px;
+}
+
+.journal-line .desc {
+  flex: 1 1 auto;
+}
+
+.journal-line .desc strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.journal-line .stamp {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--ink-3);
+  white-space: nowrap;
+  align-self: center;
+}
+
+.journal-line.posted .stamp {
+  background: var(--green-wash);
+  color: var(--green-ink);
+  border-color: var(--green-ink);
+}
+
+.grievance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.grievance-account {
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  padding: 12px 13px;
+  border-radius: 6px;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.grievance-account .acct-name {
+  font-family: var(--mono);
+  font-weight: 650;
+  color: var(--ink);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.grievance-account .acct-desc {
+  color: var(--ink-2);
+  line-height: 1.4;
+  font-size: 12.5px;
+}
+
+.grievance-account .acct-tally {
+  margin-top: auto;
+  padding-top: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.grievance-account .tally-count {
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.grievance-account .tally-btn {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-3);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.grievance-account .tally-btn:hover {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
+}
+
+.grievance-account.posted {
+  box-shadow: 0 0 0 1px var(--green-ink) inset;
+}
+
+.certification {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 2px solid var(--border);
+  background: var(--surface);
+  text-align: center;
+}
+
+.cert-stamp {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 3.5px;
+  padding: 6px 18px;
+  border: 3px solid var(--red-ink);
+  color: var(--red-ink);
+  background: var(--red-wash);
+  margin-bottom: 10px;
+  user-select: none;
+}
+
+/* === Decluttered General Ledger presentation (lighter, airier, more innovative) === */
+
+/* The big Trial Balance block — the single most important "about" visual */
+.trial-balance {
+  border: 2px solid var(--border);
+  background: var(--surface-soft);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+
+.trial-balance-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.trial-balance-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px 24px;
+}
+
+.trial-col {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.trial-col h4 {
+  margin: 0 0 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--ink);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.trial-col .entry {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px dotted var(--border);
+  line-height: 1.35;
+}
+
+.trial-col .entry:last-child {
+  border-bottom: 0;
+}
+
+.trial-col .entry .sym {
+  font-family: var(--mono);
+  font-weight: 650;
+  color: var(--ink);
+  flex: 0 0 14px;
+}
+
+.trial-col .entry .txt {
+  flex: 1;
+}
+
+/* The Wrath Subsidiary Ledger — tight horizontal rows instead of chunky cards */
+.wrath-ledger {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.wrath-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.wrath-row:last-child {
+  border-bottom: 0;
+}
+
+.wrath-row:hover {
+  background: var(--surface-soft);
+}
+
+.wrath-row .code {
+  font-family: var(--mono);
+  font-weight: 650;
+  color: var(--ink);
+  flex: 0 0 78px;
+  white-space: nowrap;
+}
+
+.wrath-row .label {
+  font-family: var(--mono);
+  font-weight: 650;
+  color: var(--ink-2);
+  flex: 0 0 92px;
+  text-transform: uppercase;
+}
+
+.wrath-row .desc {
+  flex: 1;
+  color: var(--ink-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wrath-row .tally {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  white-space: nowrap;
+  margin-left: 8px;
+}
+
+.wrath-row .post-btn {
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+  color: var(--ink-3);
+  border-radius: 3px;
+  cursor: pointer;
+  margin-left: 6px;
+}
+
+.wrath-row .post-btn:hover {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
+}
+
+.wrath-row.posted {
+  background: var(--green-wash);
+}
+
+/* Slightly tighter journal lines globally for the new lighter feel */
+.journal-line {
+  padding: 6px 10px;
+  font-size: 12.5px;
+  gap: 10px;
+}
+
+/* Make the certification seal a bit more prominent but still clean */
+#about-refusals .certification {
+  margin-top: 10px;
+  padding: 12px 14px;
+}
+
+#about-refusals .cert-stamp {
+  letter-spacing: 2.5px;
+  padding: 5px 16px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+/* Reduce some lexicon density slightly when on About */
+#page-about .lexicon {
+  gap: 8px;
+}
+
+/* Trial balance entries — use journal-line base but sit tighter inside the big block */
+.trial-balance .journal-line {
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.cert-stamp.notarized {
+  border-style: solid;
+  background: var(--green-wash);
+  color: var(--green-ink);
+  border-color: var(--green-ink);
+}
+
+.certification .cert-text {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+}
+
+.certification .cert-time {
+  font-weight: 650;
+  color: var(--ink);
+}
+
+/* Make the lexicon entries feel more like old index cards / blotter lines */
+#about-lexicon .lexicon-entry {
+  transition: transform 60ms ease, box-shadow 60ms ease;
+}
+
+#about-lexicon .lexicon-entry:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+#about-lexicon .term-list {
+  font-family: var(--mono);
+  background: var(--canvas);
+}
+
+#page-about .panel-heading h3 {
+  font-family: var(--mono);
+  letter-spacing: 0.5px;
 }

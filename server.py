@@ -3,20 +3,31 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
+import subprocess
+import sys
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from monitor.rundown import build_daily_rundown, send_telegram_message
+from monitor.sanitize import safe_preview
 from monitor.snapshot import collect_snapshot
 
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
-_CACHE: dict[str, object] = {"timestamp": 0.0, "payload": None}
+LOCAL_CACHE = ROOT / ".ledger-cache"
+SNAPSHOT_CACHE = LOCAL_CACHE / "snapshot.json"
+_CACHE: dict[str, object] = {"timestamp": 0.0, "payload": None, "cacheWarning": None}
 _CACHE_LOCK = threading.Lock()
+_REFRESH_LOCK = threading.Lock()
+_BACKGROUND_REFRESH: subprocess.Popen[bytes] | None = None
 CACHE_SECONDS = 20
+BACKGROUND_REFRESH_SECONDS = int(os.environ.get("THE_LEDGER_BACKGROUND_REFRESH_SECONDS", "300"))  # 5 minutes default for fresh-on-refresh feel without constant heavy work
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -26,6 +37,11 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/healthz":
             self._json({"ok": True})
+            return
+        if parsed.path == "/favicon.ico":
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
             return
         if parsed.path == "/api/snapshot":
             params = parse_qs(parsed.query)
@@ -38,6 +54,14 @@ class Handler(BaseHTTPRequestHandler):
             refresh = params.get("refresh", ["0"])[0] == "1"
             include_hermes = params.get("hermes", ["1"])[0] != "0"
             self._snapshot_events(refresh=refresh, include_hermes=include_hermes)
+            return
+        if parsed.path == "/api/daily-rundown":
+            params = parse_qs(parsed.query)
+            refresh = params.get("refresh", ["0"])[0] == "1"
+            day = params.get("day", [None])[0]
+            timezone_name = params.get("timezone", [None])[0]
+            payload = get_snapshot(refresh=refresh, include_hermes=True)
+            self._json(build_daily_rundown(payload, day=day, timezone_name=timezone_name))
             return
         if parsed.path in {"/", "/index.html"}:
             self._file(STATIC / "index.html")
@@ -84,9 +108,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         try:
-            self._event("status", {"message": "Starting scan"})
-            self._event("status", {"message": "Reading local usage records"})
-            payload = get_snapshot(refresh=refresh, include_hermes=include_hermes)
+            def progress(message: str) -> None:
+                self._event("status", {"message": message})
+
+            if refresh:
+                progress("Refreshing the latest local day")
+                payload = refresh_snapshot(include_hermes=include_hermes, progress=progress, refresh_recent=True)
+            else:
+                payload = get_snapshot(refresh=False, include_hermes=include_hermes)
+                if (payload.get("meta") or {}).get("loading"):
+                    progress("Starting first local scan")
+                    payload = refresh_snapshot(include_hermes=include_hermes, progress=progress, refresh_recent=False)
             self._event("complete", payload)
         except Exception as exc:  # pragma: no cover - defensive endpoint boundary
             self._event("error", {"message": str(exc)})
@@ -94,13 +126,205 @@ class Handler(BaseHTTPRequestHandler):
 
 def get_snapshot(*, refresh: bool, include_hermes: bool) -> dict[str, object]:
     now = time.monotonic()
+    if refresh:
+        return refresh_snapshot(include_hermes=include_hermes, refresh_recent=True)
+
     with _CACHE_LOCK:
-        if not refresh and _CACHE["payload"] is not None and now - float(_CACHE["timestamp"]) < CACHE_SECONDS:
-            return _CACHE["payload"]  # type: ignore[return-value]
-        payload = collect_snapshot(include_hermes=include_hermes)
-        _CACHE["timestamp"] = now
-        _CACHE["payload"] = payload
+        memory_is_fresh = _CACHE["payload"] is not None and now - float(_CACHE["timestamp"]) < CACHE_SECONDS
+        payload = _CACHE["payload"]
+
+    if not refresh and memory_is_fresh:
+        return cached_payload("memory") or loading_snapshot()
+
+    if payload is None:
+        payload = load_disk_snapshot()
+
+    if payload is not None:
+        ensure_background_refresh(include_hermes=include_hermes)
+        return cached_payload("disk") or payload  # type: ignore[return-value]
+
+    return loading_snapshot()
+
+
+def refresh_snapshot(
+    *,
+    include_hermes: bool,
+    progress: Callable[[str], None] | None = None,
+    refresh_recent: bool = False,
+) -> dict[str, object]:
+    with _REFRESH_LOCK:
+        cached = cached_payload("memory") or load_disk_snapshot()
+        refresh_after_day = latest_snapshot_day(cached) if refresh_recent and cached else None
+        payload = collect_snapshot(
+            include_hermes=include_hermes,
+            progress=progress,
+            session_cache_dir=LOCAL_CACHE,
+            refresh_after_day=refresh_after_day,
+            previous_snapshot=cached if isinstance(cached, dict) else None,
+        )
+        meta = payload.setdefault("meta", {})
+        if isinstance(meta, dict) and refresh_after_day:
+            meta["refreshScope"] = "latest-day"
+            meta["refreshAfterDay"] = refresh_after_day
+        cache_error = store_snapshot(payload)
+        if cache_error:
+            meta = payload.setdefault("meta", {})
+            if isinstance(meta, dict):
+                meta["cacheWarning"] = cache_error
         return payload
+
+
+def ensure_background_refresh(*, include_hermes: bool) -> None:
+    global _BACKGROUND_REFRESH
+    if not should_background_refresh():
+        return
+    if _BACKGROUND_REFRESH and _BACKGROUND_REFRESH.poll() is None:
+        return
+    try:
+        LOCAL_CACHE.mkdir(exist_ok=True)
+        log = (LOCAL_CACHE / "refresh.log").open("ab")
+        command = [sys.executable, "-S", str(ROOT / "server.py"), "--warm-cache"]
+        if not include_hermes:
+            command.append("--no-hermes")
+        _BACKGROUND_REFRESH = subprocess.Popen(command, cwd=str(ROOT), stdout=log, stderr=log, stdin=subprocess.DEVNULL)
+        log.close()
+    except OSError as exc:
+        set_cache_warning(f"Unable to start background refresh: {safe_preview(exc)}")
+        return
+
+
+def should_background_refresh() -> bool:
+    with _CACHE_LOCK:
+        payload = _CACHE.get("payload")
+        timestamp = float(_CACHE.get("timestamp") or 0)
+    if payload is None:
+        return True
+    if BACKGROUND_REFRESH_SECONDS <= 0:
+        return False
+    return payload is None or time.monotonic() - timestamp > BACKGROUND_REFRESH_SECONDS
+
+
+def store_snapshot(payload: dict[str, object]) -> str | None:
+    error = None
+    try:
+        LOCAL_CACHE.mkdir(exist_ok=True)
+        temporary = SNAPSHOT_CACHE.with_name(f"{SNAPSHOT_CACHE.name}.{os.getpid()}.{threading.get_ident()}.{time.monotonic_ns()}.tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary.replace(SNAPSHOT_CACHE)
+    except OSError as exc:
+        error = f"Unable to write snapshot cache: {safe_preview(exc)}"
+        write_cache_log(error)
+    with _CACHE_LOCK:
+        _CACHE["timestamp"] = time.monotonic()
+        _CACHE["cacheWarning"] = error
+        _CACHE["payload"] = payload
+    return error
+
+
+def load_disk_snapshot() -> dict[str, object] | None:
+    try:
+        stat = SNAPSHOT_CACHE.stat()
+        payload = json.loads(SNAPSHOT_CACHE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        set_cache_warning(f"Unable to read snapshot cache: {safe_preview(exc)}")
+        return None
+    if not isinstance(payload, dict):
+        set_cache_warning("Snapshot cache has an unsupported shape")
+        return None
+    age = max(0.0, time.time() - stat.st_mtime)
+    with _CACHE_LOCK:
+        _CACHE["timestamp"] = time.monotonic() - age
+        _CACHE["cacheWarning"] = None
+        _CACHE["payload"] = payload
+    return payload
+
+
+def cached_payload(source: str) -> dict[str, object] | None:
+    with _CACHE_LOCK:
+        payload = _CACHE.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    return with_cache_meta(payload, source=source)
+
+
+def with_cache_meta(payload: dict[str, object], *, source: str) -> dict[str, object]:
+    with _CACHE_LOCK:
+        cache_warning = _CACHE.get("cacheWarning")
+    cloned = dict(payload)
+    existing_meta = payload.get("meta")
+    meta = dict(existing_meta) if isinstance(existing_meta, dict) else {}
+    meta["cached"] = True
+    meta["cacheSource"] = source
+    meta["refreshing"] = bool(_BACKGROUND_REFRESH and _BACKGROUND_REFRESH.poll() is None)
+    if cache_warning:
+        meta["cacheWarning"] = cache_warning
+    cloned["meta"] = meta
+    return cloned
+
+
+def loading_snapshot() -> dict[str, object]:
+    with _CACHE_LOCK:
+        cache_warning = _CACHE.get("cacheWarning")
+    return {
+        "meta": {
+            "generatedAt": None,
+            "scanSeconds": None,
+            "loading": True,
+            "message": "Scanning local records",
+            **({"cacheWarning": cache_warning} if cache_warning else {}),
+        },
+        "overview": {},
+        "discovery": {},
+        "codex": {},
+        "opencode": {},
+        "cursor": {},
+        "grok": {},
+        "lattice": {},
+        "hermes": {},
+        "about": {},
+    }
+
+
+def set_cache_warning(message: str) -> None:
+    with _CACHE_LOCK:
+        _CACHE["cacheWarning"] = message
+    write_cache_log(message)
+
+
+def write_cache_log(message: str) -> None:
+    try:
+        LOCAL_CACHE.mkdir(exist_ok=True)
+        with (LOCAL_CACHE / "refresh.log").open("a", encoding="utf-8") as handle:
+            handle.write(f"{message}\n")
+    except OSError:
+        return
+
+
+def latest_snapshot_day(payload: dict[str, object] | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    days: set[str] = set()
+    codex = payload.get("codex") if isinstance(payload.get("codex"), dict) else {}
+    hermes = payload.get("hermes") if isinstance(payload.get("hermes"), dict) else {}
+    opencode = payload.get("opencode") if isinstance(payload.get("opencode"), dict) else {}
+    sources = [
+        ((codex.get("sessions") or {}).get("timeline") if isinstance(codex, dict) else None),
+        (((codex.get("state") or {}).get("projects") or {}).get("total") if isinstance(codex, dict) else None),
+        ((((hermes.get("local") or {}).get("state") or {}).get("byDay")) if isinstance(hermes, dict) else None),
+        (((opencode.get("database") or {}).get("projects") or {}).get("total") if isinstance(opencode, dict) else None),
+    ]
+    for rows in sources:
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            day = str(row.get("day") or "")
+            if day:
+                days.add(day)
+    return max(days) if days else None
 
 
 def encode_sse(event: str, payload: object) -> bytes:
@@ -112,7 +336,33 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run The Ledger local usage dashboard.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5177)
+    parser.add_argument("--warm-cache", action="store_true", help="Refresh the local aggregate snapshot cache and exit.")
+    parser.add_argument("--no-hermes", action="store_true", help="Skip Hermes/Codex-agent records for this scan.")
+    parser.add_argument("--daily-rundown", action="store_true", help="Print the local daily usage rundown and exit.")
+    parser.add_argument("--send-telegram", action="store_true", help="Send the local daily usage rundown with TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.")
+    parser.add_argument("--telegram-dry-run", action="store_true", help="Print the Telegram payload without sending it.")
+    parser.add_argument("--day", help="Day to summarize as YYYY-MM-DD.")
+    parser.add_argument("--timezone", help="IANA timezone label for the rundown.")
     args = parser.parse_args()
+    if args.warm_cache:
+        refresh_snapshot(include_hermes=not args.no_hermes)
+        return
+    if args.daily_rundown or args.send_telegram or args.telegram_dry_run:
+        payload = refresh_snapshot(include_hermes=True, refresh_recent=True)
+        rundown = build_daily_rundown(payload, day=args.day, timezone_name=args.timezone)
+        if args.telegram_dry_run:
+            print("Telegram dry run payload:")
+            print(rundown["text"])
+            return
+        if args.send_telegram:
+            result = send_telegram_message(rundown["text"])
+            if not result.get("ok"):
+                print(f"Telegram send failed: {result.get('error')}", file=sys.stderr)
+                raise SystemExit(1)
+            print("Telegram message sent.")
+            return
+        print(rundown["text"])
+        return
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"The Ledger running at http://{args.host}:{args.port}")
     try:

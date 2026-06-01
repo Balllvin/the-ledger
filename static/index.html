@@ -31,6 +31,14 @@
           <input type="checkbox" data-system-toggle="opencode" checked />
           <span>OpenCode</span>
         </label>
+        <label>
+          <input type="checkbox" data-system-toggle="cursor" checked />
+          <span>Cursor</span>
+        </label>
+        <label>
+          <input type="checkbox" data-system-toggle="grok" checked />
+          <span>Grok</span>
+        </label>
       </fieldset>
     </div>
 
@@ -38,7 +46,7 @@
       <section id="page-usage" class="page active" aria-labelledby="usage-title">
         <div class="page-heading">
           <div>
-            <h2 id="usage-title">Usage Over Time</h2>
+            <h2 id="usage-title">Usage</h2>
             <p id="generated-at">Waiting for first scan</p>
           </div>
         </div>
@@ -48,7 +56,7 @@
             <div class="panel-heading">
               <h3>Tokens used</h3>
             </div>
-            <div id="usage-chart" class="chart" role="img" aria-label="Token usage by project over time"></div>
+            <div id="usage-chart" class="chart" role="img" aria-label="Token usage by project"></div>
           </article>
           <aside class="panel">
             <div class="panel-heading">
@@ -59,7 +67,7 @@
         </div>
         <article class="panel">
           <div class="panel-heading">
-            <h3>Swear Meter</h3>
+            <h3>Frustration Index</h3>
           </div>
           <div id="swear-meter-summary" class="swear-meter"></div>
         </article>
@@ -117,7 +125,7 @@
           </article>
           <article class="panel">
             <div class="panel-heading">
-              <h3>Hermes</h3>
+              <h3>Codex agents</h3>
               <span id="hermes-status" class="tag neutral">WSL</span>
             </div>
             <div id="hermes-summary" class="source-list"></div>
@@ -132,37 +140,25 @@
         </div>
       </section>
 
-      <section id="page-about" class="page" aria-labelledby="about-title">
-        <div class="page-heading">
-          <div>
-            <h2 id="about-title">About</h2>
-          </div>
+      <section id="page-about" class="page" aria-label="About">
+        <div id="about-contract" class="panel"></div>
+
+        <div id="about-frustration" class="panel">
+          <div class="panel-heading"><h3>Wrath Accounts</h3></div>
+          <div id="about-frustration-body"></div>
         </div>
-        <article class="panel about-panel">
-          <p>
-            The Ledger is a local dashboard for AI usage. The Swear Meter idea is credited to
-            <a href="https://github.com/petergpt/codex-swear-meter" target="_blank" rel="noreferrer">petergpt/codex-swear-meter</a>.
-          </p>
-          <p>It reads local records, counts matching user messages, and shows totals without showing raw messages.</p>
-          <div id="about-metrics" class="mini-metrics"></div>
-        </article>
-        <article class="panel about-panel">
+
+        <div id="about-lexicon" class="panel">
           <div class="panel-heading">
-            <h3>How the Swear Meter works</h3>
+            <h3>The Index</h3>
+            <input type="search" id="lexicon-filter" placeholder="Search the blotter..." aria-label="Filter the index" />
           </div>
-          <ol class="plain-list">
-            <li>Scan user messages from local Codex records.</li>
-            <li>Match the word sets below.</li>
-            <li>Count one message once for the index, even when it hits more than one set.</li>
-            <li>Count every matched phrase for hits.</li>
-          </ol>
-        </article>
-        <article class="panel about-panel">
-          <div class="panel-heading">
-            <h3>Word sets</h3>
-          </div>
-          <div id="about-word-sets" class="word-set-list"></div>
-        </article>
+          <div id="about-word-sets" class="lexicon"></div>
+        </div>
+
+        <div id="about-how" class="panel"></div>
+
+        <div id="about-refusals" class="panel"></div>
       </section>
     </main>
 
